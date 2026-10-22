@@ -1068,31 +1068,27 @@ let _mosState = { funcId:null, funcNome:null, assuntos:null, aba:'agendadas', os
 async function _mosResolverTecnico(){
   if (_mosState.funcId) return _mosState.funcId;
   _mosState._erro = null; _mosState._dbg = [];
-  const uid = sessaoAtual && sessaoAtual.usuario_id;
-  _mosState._dbg.push('sessão: usuario_id='+uid+' · login='+(sessaoAtual&&sessaoAtual.usuario_login)+' · email='+(sessaoAtual&&sessaoAtual.usuario_email));
-  // 1) vínculo oficial: usuarios.funcionario ("Colaborador/Responsável")
-  if (uid){
+  const uid   = sessaoAtual && sessaoAtual.usuario_id;
+  const email = sessaoAtual && sessaoAtual.usuario_email;
+  _mosState._dbg.push('sessão: usuario_id='+uid+' · email='+email);
+  // Ordem: usuarios.funcionario → funcionarios.email → funcionarios.usuario_id
+  const tries = [];
+  if (uid)   tries.push(['usuarios',     {qtype:'usuarios.id',             query:String(uid)},   'funcionario']);
+  if (email) tries.push(['funcionarios', {qtype:'funcionarios.email',      query:String(email)}, 'id']);
+  if (uid)   tries.push(['funcionarios', {qtype:'funcionarios.usuario_id', query:String(uid)},   'id']);
+  for (const t of tries){
+    const ep=t[0], filt=t[1], campo=t[2];
     try {
-      const r = await ixcGet('usuarios', { qtype:'usuarios.id', query:String(uid), oper:'=', page:'1', rp:'1', sortname:'usuarios.id', sortorder:'asc' });
-      const u = r && r.registros && r.registros[0];
-      _mosState._dbg.push('usuarios(id='+uid+'): total='+(r&&r.total)+' achou='+(!!u));
-      if (u){
-        const fk = Object.keys(u).filter(k=>/func|colab|respons/i.test(k)).map(k=>k+'='+u[k]);
-        _mosState._dbg.push('reg usuarios: id='+u.id+' | '+(fk.join(' | ')||'(sem campo func/colab)'));
+      const r = await ixcGet(ep, Object.assign({oper:'=',page:'1',rp:'1',sortname:ep+'.id',sortorder:'asc'}, filt));
+      const topKeys = (r && typeof r==='object') ? Object.keys(r).join(',') : ('tipo:'+typeof r);
+      const reg = r && r.registros && r.registros[0];
+      _mosState._dbg.push(ep+'['+filt.qtype.split('.')[1]+'='+filt.query+']: top={'+topKeys+'} total='+(r&&r.total)+' reg='+(!!reg));
+      if (reg){
+        const val = reg[campo];
+        _mosState._dbg.push('  → '+campo+'='+val+' nome='+(reg.nome||reg.funcionario||reg.usuario||''));
+        if (val && String(val)!=='0'){ _mosState.funcId=String(val); _mosState.funcNome=reg.nome||reg.funcionario||null; return _mosState.funcId; }
       }
-      if (u && u.funcionario && String(u.funcionario)!=='0'){ _mosState.funcId=String(u.funcionario); _mosState.funcNome=u.nome||null; return _mosState.funcId; }
-    } catch(e){ _mosState._erro = 'usuarios: '+(e.message||e); }
-  }
-  // 2/3) fallbacks pelo lado de funcionarios
-  const tent = [];
-  if (uid)                                     tent.push({ qtype:'funcionarios.usuario_id', query:String(uid) });
-  if (sessaoAtual && sessaoAtual.usuario_email) tent.push({ qtype:'funcionarios.email',      query:String(sessaoAtual.usuario_email) });
-  for (const t of tent){
-    try {
-      const r = await ixcGet('funcionarios', { qtype:t.qtype, query:t.query, oper:'=', page:'1', rp:'1', sortname:'funcionarios.id', sortorder:'asc' });
-      const f = r && r.registros && r.registros[0];
-      if (f && f.id){ _mosState.funcId=String(f.id); _mosState.funcNome=f.funcionario||f.nome||null; return _mosState.funcId; }
-    } catch(e){ _mosState._erro = 'funcionarios: '+(e.message||e); }
+    } catch(e){ _mosState._dbg.push(ep+' ERRO: '+(e.message||e)); }
   }
   return null;
 }
