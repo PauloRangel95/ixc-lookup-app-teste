@@ -212,6 +212,8 @@ function setState(s) {
   elError.style.display = s==='error'  ? '':'none';
   elRes.style.display   = s==='result' ? '':'none';
   if (s==='none') { elIdle.style.display='none'; elLoad.style.display='none'; elError.style.display='none'; elRes.style.display='none'; }
+  // Minhas OS (inline) e barra de OS só aparecem quando chamados; qualquer estado esconde
+  var _mov=document.getElementById('minhas-os-view'); if(_mov) _mov.style.display='none';
 }
 
 // ── Login ──────────────────────────────────────
@@ -720,7 +722,7 @@ document.addEventListener('click', e => {
   if (action==='mos-voltar')          _mosRenderAba(_mosState.aba);
   if (action==='mos-entrar')          _mosEntrarOS(p);
   if (action==='mos-voltar-lista')    abrirMinhasOS();
-  if (action==='mos-detalhe-modal')   { const m=document.getElementById('minhas-os-modal'); if(m) m.style.display='flex'; _mosDetalhe(p); }
+  if (action==='mos-detalhe-modal')   { const v=document.getElementById('minhas-os-view'); const c=document.getElementById('os-contexto'); if(c)c.style.display='none'; setState('none'); if(v)v.style.display=''; _mosDetalhe(p); }
   if (action==='toggle-pppoe-pass') {
     const disp = btn.parentElement.querySelector('.pass-display');
     if (disp) {
@@ -1110,8 +1112,10 @@ async function _mosCarregarAssuntos(){
   _mosState.assuntos = map; return map;
 }
 async function abrirMinhasOS(){
-  const modal=document.getElementById('minhas-os-modal'); if(!modal) return;
-  modal.style.display='flex';
+  const view=document.getElementById('minhas-os-view'); if(!view) return;
+  const ctx=document.getElementById('os-contexto'); if(ctx) ctx.style.display='none';
+  setState('none');
+  view.style.display='';
   const cont=document.getElementById('mos-conteudo');
   const tec=document.getElementById('mos-tecnico');
   cont.innerHTML='<div class="olt-status-msg cinza">Localizando suas OS...</div>';
@@ -1135,7 +1139,7 @@ async function abrirMinhasOS(){
 }
 function _mosRenderAba(aba){
   _mosState.aba=aba;
-  document.querySelectorAll('#minhas-os-modal .gestao-tab').forEach(b=>b.classList.toggle('ativa', b.dataset.mostab===aba));
+  document.querySelectorAll('#minhas-os-view .gestao-tab').forEach(b=>b.classList.toggle('ativa', b.dataset.mostab===aba));
   const cont=document.getElementById('mos-conteudo'); if(!cont) return;
   const alvo = MOS_STATUS[aba]||[];
   const lista = (_mosState.osAll||[]).filter(o => alvo.includes(String(o.status)));
@@ -1246,8 +1250,6 @@ function _mosRenderContexto(o){
 async function _mosEntrarOS(osId){
   const o=_mosState.osById && _mosState.osById[String(osId)]; if(!o) return;
   _mosState.osAtiva=o;
-  const m=document.getElementById('minhas-os-modal'); if(m) m.style.display='none';
-  _mosRenderContexto(o);
   const contrato=(o.id_contrato_kit && String(o.id_contrato_kit)!=='0')?String(o.id_contrato_kit):'';
   if(!contrato){ setState('idle'); toast('OS sem contrato vinculado','err'); return; }
   try { elInput.value=contrato; setState('loading'); await buscarContrato(contrato); }
@@ -1282,10 +1284,8 @@ function _mosPrependOSCard(o){
 // Wiring (os elementos já existem no index.html)
 (function(){
   const b=document.getElementById('btn-minhas-os'); if(b) b.addEventListener('click', abrirMinhasOS);
-  const f=document.getElementById('mos-fechar');    if(f) f.addEventListener('click', ()=>{ const m=document.getElementById('minhas-os-modal'); if(m) m.style.display='none'; });
   const a=document.getElementById('mos-atualizar');  if(a) a.addEventListener('click', ()=>{ _mosState.osAll=null; abrirMinhasOS(); });
-  document.querySelectorAll('#minhas-os-modal .gestao-tab').forEach(t=> t.addEventListener('click', ()=> _mosRenderAba(t.dataset.mostab)));
-  const modal=document.getElementById('minhas-os-modal'); if(modal) modal.addEventListener('click', e=>{ if(e.target===modal) modal.style.display='none'; });
+  document.querySelectorAll('#minhas-os-view .gestao-tab').forEach(t=> t.addEventListener('click', ()=> _mosRenderAba(t.dataset.mostab)));
 })();
 
 window.abrirLink = url => {

@@ -1117,6 +1117,21 @@ body::before{
 <!-- Resultados -->
 <div id="results" style="display:none"></div>
 
+<!-- Minhas OS (técnico) — inline, abaixo da busca (conteúdo inicial do técnico) -->
+<div id="minhas-os-view" style="display:none;padding:4px 12px 14px">
+  <div style="display:flex;align-items:center;gap:8px;margin:6px 0 10px">
+    <strong style="font-family:var(--font-head);font-size:15px;color:var(--acc);flex:1">🧰 Minhas OS</strong>
+    <span id="mos-tecnico" style="font-size:11px;color:var(--tx2)"></span>
+    <button class="btn-sm btn-gray" id="mos-atualizar" title="Recarregar">↻</button>
+  </div>
+  <div class="gestao-tabs">
+    <button class="gestao-tab ativa" data-mostab="agendadas">📅 Agendadas</button>
+    <button class="gestao-tab" data-mostab="reagendar">🕐 Aguard. reagend.</button>
+    <button class="gestao-tab" data-mostab="encerradas">✅ Encerradas</button>
+  </div>
+  <div id="mos-conteudo"><div class="olt-status-msg cinza">Carregando...</div></div>
+</div>
+
 <!-- Modal OLT Config -->
 <div id="olt-config-modal">
   <div class="box">
@@ -1133,24 +1148,6 @@ body::before{
       <button class="btn-sm btn-blue" id="olt-config-save">Salvar</button>
     </div>
     <div id="olt-config-erro"></div>
-  </div>
-</div>
-
-<!-- Modal Minhas OS (técnico) — Fase 0, só leitura -->
-<div id="minhas-os-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:200;display:none;align-items:flex-start;justify-content:center;padding:16px;overflow-y:auto;backdrop-filter:blur(4px)">
-  <div style="background:var(--bg2);border:1px solid var(--b2);border-radius:var(--radius);padding:18px;width:100%;max-width:680px;max-height:92vh;overflow-y:auto">
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-      <h3 style="font-family:var(--font-head);font-size:17px;font-weight:700;color:var(--acc);flex:1;letter-spacing:.3px">🧰 Minhas OS</h3>
-      <span id="mos-tecnico" style="font-size:11px;color:var(--tx2)"></span>
-      <button class="btn-sm btn-gray" id="mos-atualizar" title="Recarregar">↻</button>
-      <button class="btn-sm btn-gray" id="mos-fechar">✕</button>
-    </div>
-    <div class="gestao-tabs">
-      <button class="gestao-tab ativa" data-mostab="agendadas">📅 Agendadas</button>
-      <button class="gestao-tab" data-mostab="reagendar">🕐 Aguard. reagend.</button>
-      <button class="gestao-tab" data-mostab="encerradas">✅ Encerradas</button>
-    </div>
-    <div id="mos-conteudo"><div class="olt-status-msg cinza">Carregando...</div></div>
   </div>
 </div>
 
