@@ -12,6 +12,7 @@ const WEBHOOK_OZMAP_MAPA = 'https://carajasnet-n8n.bwadmr.easypanel.host/webhook
 const WEBHOOK_OZMAP_CRIAR = 'https://carajasnet-n8n.bwadmr.easypanel.host/webhook/ixc-ozmap-criar'; // criar/apagar no OZmap (Fase 3, escrita)
 const OZMAP_CRIAR_LOGIN_TESTE = '9441'; // nesta fase, criação liberada só p/ este login de teste
 const WEBHOOK_HISTSZ   = 'https://carajasnet-n8n.bwadmr.easypanel.host/webhook/ixc-histsz'; // histórico SZ Chat (Supabase via n8n)
+const WEBHOOK_OS_ACAO  = 'https://testes-n8n-testes.bwadmr.easypanel.host/webhook/os-acao'; // ESCRITA de OS (n8n de TESTE)
 
 // ── Toggle de token (v1.6) ──
 // Modo padrão na 1ª vez: master (mais seguro — não dá erro inesperado)
@@ -722,6 +723,7 @@ document.addEventListener('click', e => {
   if (action==='mos-voltar')          _mosRenderAba(_mosState.aba);
   if (action==='mos-entrar')          _mosEntrarOS(p);
   if (action==='mos-voltar-lista')    abrirMinhasOS();
+  if (action==='os-mensagem')         _osRegistrarMensagem(p);
   if (action==='mos-detalhe-modal')   { const v=document.getElementById('minhas-os-view'); const c=document.getElementById('os-contexto'); if(c)c.style.display='none'; setState('none'); if(v)v.style.display=''; _mosDetalhe(p); }
   if (action==='toggle-pppoe-pass') {
     const disp = btn.parentElement.querySelector('.pass-display');
@@ -1287,12 +1289,25 @@ function _mosPrependOSCard(o){
   if(latlng) topBtns+='<button class="btn-sm btn-gray" data-action="link" data-p="https://www.google.com/maps?q='+latlng+'">📍 Mapa</button>';
   topBtns+='<button class="btn-sm btn-gray" data-action="mos-voltar-lista">← Minhas OS</button>';
   body+='<div class="btns" style="margin-top:8px">'+topBtns+'</div>';
-  body+='<div style="margin-top:8px;padding:6px 8px;border:1px dashed var(--b2);border-radius:6px;font-size:11px;color:var(--tx2)">⚙ Ações (assumir · deslocamento · executar · finalizar · reagendar) — <b>em breve</b> (fase de escrita)</div>';
+  body+='<div style="margin-top:8px"><div style="font-size:11px;color:var(--tx2);margin-bottom:4px">Ações da OS (teste):</div>'
+    +'<div class="btns"><button class="btn-sm btn-blue" data-action="os-mensagem" data-p="'+o.id+'">➕ Registrar mensagem</button></div>'
+    +'<div style="font-size:10px;color:var(--tx2);margin-top:6px">🚧 Iniciar deslocamento · Executar · Finalizar · Reagendar — em breve</div></div>';
   const html='<div id="os-card-topo" style="background:var(--bg2);border:1px solid var(--y3);border-radius:10px;padding:12px;margin-bottom:10px">'
     +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px"><strong style="font-family:var(--font-head);color:var(--acc);font-size:14px">🧰 OS #'+o.id+(o.protocolo?' · '+o.protocolo:'')+'</strong> '+stB+' '+prB+'</div>'
     +body+'</div>';
   const wrap=document.createElement('div'); wrap.innerHTML=html;
   el.insertBefore(wrap.firstElementChild, el.firstChild);
+}
+// ESCRITA de OS (fase teste) — registrar mensagem. Vai pro n8n de TESTE, travado na OS de teste.
+async function _osRegistrarMensagem(idChamado){
+  const msg = prompt('Mensagem para registrar na OS #'+idChamado+':');
+  if (!msg || !msg.trim()) return;
+  try {
+    const r = await fetch(WEBHOOK_OS_ACAO, { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ acao:'mensagem', id_chamado:String(idChamado), mensagem:msg.trim(), id_tecnico:(_mosState.funcId||'') }) }).then(x=>x.json());
+    if (r && r.ok) toast('Mensagem registrada na OS ✓','ok');
+    else toast('Falha: '+((r&&r.erro)||'erro'),'err');
+  } catch(e){ toast('Erro ao registrar: '+(e.message||''),'err'); }
 }
 // Wiring (os elementos já existem no index.html)
 (function(){
