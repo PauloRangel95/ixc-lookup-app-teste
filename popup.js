@@ -718,6 +718,9 @@ document.addEventListener('click', e => {
   if (action==='mos-abrir')           { const m=document.getElementById('minhas-os-modal'); if(m) m.style.display='none'; selecionarContrato(p); }
   if (action==='mos-detalhe')         _mosDetalhe(p);
   if (action==='mos-voltar')          _mosRenderAba(_mosState.aba);
+  if (action==='mos-entrar')          _mosEntrarOS(p);
+  if (action==='mos-voltar-lista')    abrirMinhasOS();
+  if (action==='mos-detalhe-modal')   { const m=document.getElementById('minhas-os-modal'); if(m) m.style.display='flex'; _mosDetalhe(p); }
   if (action==='toggle-pppoe-pass') {
     const disp = btn.parentElement.querySelector('.pass-display');
     if (disp) {
@@ -1156,8 +1159,8 @@ function _mosRenderAba(aba){
       +(endereco?'<div style="font-size:11px;color:var(--tx2)">📍 '+endereco+(o.complemento?(' — '+o.complemento):'')+'</div>':'')
       +(msgCut?'<div style="font-size:11px;color:var(--tx2);margin-top:4px;white-space:pre-wrap">'+msgCut+(msg.length>180?'…':'')+'</div>':'')
       +'<div class="btns" style="margin-top:6px">'
-      +'<button class="btn-sm btn-gray" data-action="mos-detalhe" data-p="'+o.id+'">🔎 Ver OS</button>'
-      +(contrato?'<button class="btn-sm btn-blue" data-action="mos-abrir" data-p="'+contrato+'">Abrir contrato #'+contrato+'</button>':'')
+      +(contrato?'<button class="btn-sm btn-blue" data-action="mos-entrar" data-p="'+o.id+'">📂 Entrar na OS</button>':'')
+      +'<button class="btn-sm btn-gray" data-action="mos-detalhe" data-p="'+o.id+'">🔎 Detalhe</button>'
       +'</div>'
       +'</div>';
   }).join('');
@@ -1185,8 +1188,8 @@ async function _mosDetalhe(osId){
   if (o.id_login)   h += mrow('Login (id)', o.id_login);
   if (o.mensagem) h += '<div style="margin-top:6px;font-size:12px"><b>Relato:</b><div style="white-space:pre-wrap;color:var(--tx2)">'+o.mensagem+'</div></div>';
   let btns='';
+  if (contrato) btns += '<button class="btn-sm btn-blue" data-action="mos-entrar" data-p="'+o.id+'">📂 Entrar na OS (carregar cliente)</button>';
   if (latlng)   btns += '<button class="btn-sm btn-gray" data-action="link" data-p="https://www.google.com/maps?q='+latlng+'">📍 Mapa</button>';
-  if (contrato) btns += '<button class="btn-sm btn-blue" data-action="mos-abrir" data-p="'+contrato+'">Abrir contrato</button>';
   if (btns) h += '<div class="btns" style="margin-top:8px">'+btns+'</div>';
   h += '<div style="margin-top:10px;padding:8px;border:1px dashed var(--b2);border-radius:8px;font-size:11px;color:var(--tx2)">⚙ Ações (assumir · iniciar deslocamento · executar · finalizar · reagendar) — <b>em breve</b> (fase de escrita, no n8n de teste).</div>';
   h += '<div id="mos-msgs" style="margin-top:10px"><div class="olt-status-msg cinza">Carregando histórico...</div></div>';
@@ -1203,6 +1206,28 @@ async function _mosDetalhe(osId){
         return '<div style="border-left:2px solid var(--b2);padding:4px 8px;margin-bottom:6px"><div style="font-size:10px;color:var(--tx2)">'+d+st+'</div><div style="font-size:12px;white-space:pre-wrap;color:var(--tx)">'+((m.mensagem||'').trim()||'—')+'</div></div>';
       }).join('');
   } catch(e){ const el=document.getElementById('mos-msgs'); if(el) el.innerHTML='<div class="olt-status-msg amarelo">Erro ao carregar histórico: '+(e.message||'')+'</div>'; }
+}
+function _mosRenderContexto(o){
+  const bar=document.getElementById('os-contexto'); if(!bar) return;
+  if(!o){ bar.style.display='none'; bar.innerHTML=''; return; }
+  const asn=_mosState.assuntos||{}; const assunto=asn[String(o.id_assunto)]||('Assunto #'+o.id_assunto);
+  const stB=badge(MOS_ST_LABEL[o.status]||o.status, MOS_ST_COR[o.status]||'cinza');
+  bar.style.display='';
+  bar.innerHTML='<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+    +'<button class="btn-sm btn-gray" data-action="mos-voltar-lista" title="Voltar à lista de OS">← Minhas OS</button>'
+    +'<strong style="font-size:12px;color:var(--acc)">OS #'+o.id+'</strong> '+stB
+    +'<span style="font-size:11px;color:var(--tx2)">'+assunto+'</span>'
+    +'<button class="btn-sm btn-blue" data-action="mos-detalhe-modal" data-p="'+o.id+'" style="margin-left:auto" title="Detalhe e ações da OS">📋 OS / Ações</button>'
+    +'</div>';
+}
+function _mosEntrarOS(osId){
+  const o=_mosState.osById && _mosState.osById[String(osId)]; if(!o) return;
+  _mosState.osAtiva=o;
+  const m=document.getElementById('minhas-os-modal'); if(m) m.style.display='none';
+  _mosRenderContexto(o);
+  const contrato=(o.id_contrato_kit && String(o.id_contrato_kit)!=='0')?String(o.id_contrato_kit):'';
+  if (contrato) selecionarContrato(contrato);
+  else { setState('idle'); toast('OS sem contrato vinculado','err'); }
 }
 // Wiring (os elementos já existem no index.html)
 (function(){
