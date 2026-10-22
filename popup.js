@@ -725,6 +725,7 @@ document.addEventListener('click', e => {
   if (action==='mos-voltar-lista')    abrirMinhasOS();
   if (action==='os-mensagem')         _osRegistrarMensagem(p);
   if (action==='os-reagendar')        _osReagendar(p);
+  if (action==='os-atender')          _osAtendimento(p);
   if (action==='os-deslocamento')     _osDeslocamento(p);
   if (action==='os-executar')         _osExecutar(p);
   if (action==='os-finalizar')        _osFinalizar(p);
@@ -1293,17 +1294,12 @@ function _mosPrependOSCard(o){
   if(latlng) topBtns+='<button class="btn-sm btn-gray" data-action="link" data-p="https://www.google.com/maps?q='+latlng+'">📍 Mapa</button>';
   topBtns+='<button class="btn-sm btn-gray" data-action="mos-voltar-lista">← Minhas OS</button>';
   body+='<div class="btns" style="margin-top:8px">'+topBtns+'</div>';
-  // Ações SEQUENCIAIS por status: só a próxima ação válida aparece.
+  // UM fluxo contínuo de atendimento (deslocamento → execução → encerramento), numa tela só.
   var st=String(o.status||'');
-  var prox='';
-  if (['A','AN','EN','AS','AG'].indexOf(st)>=0) prox='<button class="btn-sm btn-blue" data-action="os-deslocamento" data-p="'+o.id+'">🚚 Iniciar deslocamento</button>';
-  else if (st==='DS') prox='<button class="btn-sm btn-green" data-action="os-executar" data-p="'+o.id+'">▶ Executar (cheguei)</button>';
-  else if (st==='EX') prox='<button class="btn-sm btn-blue" data-action="os-finalizar" data-p="'+o.id+'">✅ Encerrar OS</button>';
-  var reag = (['F','RAG'].indexOf(st)<0) ? '<button class="btn-sm btn-yellow" data-action="os-reagendar" data-p="'+o.id+'">🕐 P/ agendamento</button>' : '';
   var inner = (st==='F') ? '<span style="font-size:12px;color:var(--g)">✅ OS finalizada</span>'
             : (st==='RAG') ? '<span style="font-size:12px;color:var(--tx2)">🔒 aguardando reagendamento</span>'
-            : (prox+reag);
-  body+='<div style="margin-top:8px"><div style="font-size:11px;color:var(--tx2);margin-bottom:4px">Ação da OS ('+(MOS_ST_LABEL[st]||st)+'):</div>'
+            : '<button class="btn-sm btn-blue" data-action="os-atender" data-p="'+o.id+'">▶ Atender OS</button>';
+  body+='<div style="margin-top:8px"><div style="font-size:11px;color:var(--tx2);margin-bottom:4px">Status: '+(MOS_ST_LABEL[st]||st)+'</div>'
     +'<div class="btns">'+inner+'</div></div>';
   const html='<div id="os-card-topo" style="background:var(--bg2);border:1px solid var(--y3);border-radius:10px;padding:12px;margin-bottom:10px">'
     +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px"><strong style="font-family:var(--font-head);color:var(--acc);font-size:14px">🧰 OS #'+o.id+(o.protocolo?' · '+o.protocolo:'')+'</strong> '+stB+' '+prB+'</div>'
@@ -1387,20 +1383,24 @@ function _encDiagWire(ov){
   lista.onclick=(e)=>{ const row=e.target.closest('[data-diag]'); if(!row) return; _encDados.id_su_diagnostico=row.getAttribute('data-diag'); _encDados.diag_desc=row.getAttribute('data-desc'); pinta(inp.value); };
   if(!_encDiag){ _encCarregarDiag().then(()=>pinta(inp.value)); } else pinta('');
 }
-function _osAbrirEncerramento(idChamado){
+// FLUXO ÚNICO de atendimento: deslocamento → execução → encerramento (wizard) → finalizar.
+// Uma tela só que avança por status, sem recarregar a lista entre os passos.
+function _osAtendimento(idChamado){
   const o = _mosState.osById && _mosState.osById[String(idChamado)];
-  const nome = o ? ((_mosState.clienteMap && _mosState.clienteMap[String(o.id_cliente)])||'') : '';
+  if(!o) return;
+  const nome = (_mosState.clienteMap && _mosState.clienteMap[String(o.id_cliente)])||'';
   _encDados = { id_chamado:String(idChamado), relato:'' };
-  _encCarregarDiag(); // pré-carrega diagnósticos em background
-  // Telas do encerramento (tela a tela). 'render' devolve o HTML do conteúdo.
-  const emConstr = (txt)=>'<div style="padding:20px 8px;text-align:center;color:var(--tx2);font-size:12px">🚧 '+txt+'<br><small>em construção</small></div>';
+  _encCarregarDiag();
+  let status = String(o.status||'');
+  let idx = 0;
+  const emConstr = (txt)=>'<div style="padding:18px 8px;text-align:center;color:var(--tx2);font-size:12px">🚧 '+txt+'<br><small>em construção</small></div>';
   const passos = [
-    { ic:'📝', titulo:'Relato', render:()=>'<label style="font-size:12px;color:var(--tx);font-weight:600">Relato do técnico *</label>'
-        +'<textarea id="enc-relato" rows="4" style="width:100%;margin-top:6px;padding:8px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx);font-family:inherit" placeholder="O que foi feito no atendimento...">'+(_encDados.relato||'')+'</textarea>' },
     { ic:'🩺', titulo:'Diagnóstico', render:()=>(
         _encDados.diag_desc?'<div style="font-size:12px;color:var(--g);margin-bottom:6px">Selecionado: <strong>'+_encDados.diag_desc+'</strong></div>':'<div style="font-size:11px;color:var(--tx2);margin-bottom:6px">Busque e selecione o diagnóstico do atendimento.</div>')
-        +'<input id="enc-diag-busca" placeholder="🔎 buscar diagnóstico..." style="width:100%;padding:7px 8px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx);margin-bottom:6px"><div id="enc-diag-lista" style="max-height:200px;overflow-y:auto"></div>',
+        +'<input id="enc-diag-busca" placeholder="🔎 buscar diagnóstico..." style="width:100%;padding:7px 8px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx);margin-bottom:6px"><div id="enc-diag-lista" style="max-height:190px;overflow-y:auto"></div>',
       after:(ov)=>_encDiagWire(ov) },
+    { ic:'📝', titulo:'Relato', render:()=>'<label style="font-size:12px;color:var(--tx);font-weight:600">Relato do técnico *</label>'
+        +'<textarea id="enc-relato" rows="4" style="width:100%;margin-top:6px;padding:8px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx);font-family:inherit" placeholder="O que foi feito no atendimento...">'+(_encDados.relato||'')+'</textarea>' },
     { ic:'📡', titulo:'Autorizar ONU',        render:()=>emConstr('Autorizar ONU (IXC→OLT)') },
     { ic:'⚙️', titulo:'Configurar Dispositivo', render:()=>emConstr('Configurar Dispositivo (PPPoE)') },
     { ic:'📦', titulo:'Produtos / materiais',  render:()=>emConstr('Produtos / materiais') },
@@ -1410,57 +1410,70 @@ function _osAbrirEncerramento(idChamado){
         +'Cliente: <strong>'+(nome||'—')+'</strong><br>'
         +'Diagnóstico: <strong>'+(_encDados.diag_desc||'—')+'</strong><br>'
         +'Relato: <strong>'+((_encDados.relato||'').trim()||'<span style="color:var(--r)">não preenchido</span>')+'</strong><br>'
-        +'<span style="color:var(--tx2);font-size:11px">Ao encerrar, a OS vai para status Finalizada no IXC.</span></div>' }
+        +'<span style="color:var(--tx2);font-size:11px">Ao encerrar, a OS vai para Finalizada no IXC.</span></div>' }
   ];
-  let idx=0;
   const ov=document.createElement('div');
   ov.style.cssText='position:fixed;inset:0;z-index:600;background:rgba(0,0,0,.8);display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow-y:auto';
   ov.innerHTML='<div style="background:var(--bg2);border:1px solid var(--b2);border-radius:10px;padding:16px;max-width:460px;width:100%;margin:auto">'
-    +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><h3 style="font-family:var(--font-head);color:var(--acc);flex:1;font-size:16px">✅ Encerrar OS #'+idChamado+'</h3><button class="btn-sm btn-gray" id="enc-x">✕</button></div>'
-    +'<div id="enc-steps" style="display:flex;gap:4px;margin-bottom:10px;flex-wrap:wrap"></div>'
-    +'<div id="enc-titulo" style="font-size:13px;font-weight:700;color:var(--tx);margin-bottom:8px"></div>'
-    +'<div id="enc-conteudo" style="min-height:120px"></div>'
-    +'<div id="enc-msg" style="font-size:11px;margin:8px 0;min-height:14px"></div>'
-    +'<div style="display:flex;gap:8px;justify-content:space-between;margin-top:8px">'
-    +'<button class="btn-sm btn-gray" id="enc-ant">← Anterior</button>'
-    +'<div style="display:flex;gap:8px"><button class="btn-sm btn-blue" id="enc-prox">Próximo →</button>'
-    +'<button class="btn-sm btn-green" id="enc-fim" style="display:none">✅ Encerrar OS</button></div>'
-    +'</div></div>';
+    +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><h3 style="font-family:var(--font-head);color:var(--acc);flex:1;font-size:16px">▶ Atendimento · OS #'+idChamado+'</h3><button class="btn-sm btn-gray" id="at-x">✕</button></div>'
+    +'<div style="font-size:11px;color:var(--tx2);margin-bottom:10px">'+(nome?('👤 '+nome):'')+'</div>'
+    +'<div id="at-content" style="min-height:120px"></div>'
+    +'<div id="at-msg" style="font-size:11px;margin:8px 0;min-height:14px"></div>'
+    +'<div id="at-footer" style="display:flex;gap:8px;justify-content:space-between;margin-top:8px"></div>'
+    +'</div>';
   document.body.appendChild(ov);
   const fechar=()=>ov.remove();
-  const salvarTela=()=>{ const ta=ov.querySelector('#enc-relato'); if(ta) _encDados.relato=ta.value; };
-  function pinta(){
-    // indicadores
-    ov.querySelector('#enc-steps').innerHTML = passos.map((p,i)=>'<span title="'+p.titulo+'" style="font-size:14px;opacity:'+(i===idx?'1':(i<idx?'.6':'.3'))+'">'+p.ic+'</span>').join('<span style="color:var(--tx3)">·</span>');
-    ov.querySelector('#enc-titulo').textContent = passos[idx].ic+' '+passos[idx].titulo+'  ('+(idx+1)+'/'+passos.length+')';
-    ov.querySelector('#enc-conteudo').innerHTML = passos[idx].render();
-    if (passos[idx].after) { try{ passos[idx].after(ov); }catch(e){} }
-    ov.querySelector('#enc-ant').style.visibility = idx===0?'hidden':'visible';
-    const ultimo = idx===passos.length-1;
-    ov.querySelector('#enc-prox').style.display = ultimo?'none':'';
-    ov.querySelector('#enc-fim').style.display = ultimo?'':'none';
-    ov.querySelector('#enc-msg').textContent='';
+  const setMsg=(t,cor)=>{ const m=ov.querySelector('#at-msg'); if(m){m.style.color=cor||'var(--r)'; m.textContent=t||'';} };
+  const salvarRelato=()=>{ const ta=ov.querySelector('#enc-relato'); if(ta) _encDados.relato=ta.value; };
+  const btn=(id,cls,txt)=>'<button class="btn-sm '+cls+'" id="'+id+'">'+txt+'</button>';
+  async function _atAcao(acao, extra){
+    const payload=Object.assign({ acao, id_chamado:String(idChamado), id_tecnico:(_mosState.funcId||'') }, extra||{});
+    try { const r=await fetch(WEBHOOK_OS_ACAO,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(x=>x.json());
+      return { ok:!!(r&&r.ok&&r.resposta&&(r.resposta.type==='success'||r.resposta.id)), r }; }
+    catch(e){ return { ok:false, r:{erro:e.message} }; }
   }
-  ov.querySelector('#enc-x').onclick=fechar;
+  function render(){
+    const c=ov.querySelector('#at-content'), f=ov.querySelector('#at-footer'); setMsg('');
+    const reagBtn=(['F','RAG'].indexOf(status)<0)?btn('at-reag','btn-yellow','🕐 P/ agendamento'):'';
+    if (['A','AN','EN','AS','AG'].indexOf(status)>=0){
+      c.innerHTML='<div style="text-align:center;padding:14px 8px"><div style="font-size:34px">🚚</div><div style="font-size:13px;color:var(--tx);margin-top:6px">Pronto para iniciar o deslocamento.</div><div style="font-size:11px;color:var(--tx2);margin-top:4px">O cliente pode ser avisado que você está a caminho.</div></div>';
+      f.innerHTML='<div>'+reagBtn+'</div>'+btn('at-desloc','btn-blue','🚚 Iniciar deslocamento');
+    } else if (status==='DS'){
+      c.innerHTML='<div style="text-align:center;padding:14px 8px"><div style="font-size:34px">📍</div><div style="font-size:13px;color:var(--tx);margin-top:6px">Em deslocamento. Ao chegar, inicie a execução.</div></div>';
+      f.innerHTML='<div>'+reagBtn+'</div>'+btn('at-exec','btn-green','📍 Cheguei — iniciar execução');
+    } else if (status==='EX'){
+      const steps=passos.map((p,i)=>'<span title="'+p.titulo+'" style="font-size:14px;opacity:'+(i===idx?'1':(i<idx?'.6':'.3'))+'">'+p.ic+'</span>').join('<span style="color:var(--tx3)">·</span>');
+      c.innerHTML='<div style="display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap">'+steps+'</div>'
+        +'<div style="font-size:13px;font-weight:700;color:var(--tx);margin-bottom:8px">'+passos[idx].ic+' '+passos[idx].titulo+' ('+(idx+1)+'/'+passos.length+')</div>'
+        +'<div id="enc-conteudo">'+passos[idx].render()+'</div>';
+      if (passos[idx].after){ try{ passos[idx].after(ov); }catch(e){} }
+      const ultimo=idx===passos.length-1;
+      f.innerHTML='<div>'+(idx>0?btn('at-ant','btn-gray','← Anterior'):'')+'</div>'
+        +'<div style="display:flex;gap:8px">'+reagBtn+(ultimo?btn('at-fim','btn-green','✅ Encerrar OS'):btn('at-prox','btn-blue','Próximo →'))+'</div>';
+    } else if (status==='F'){
+      c.innerHTML='<div style="text-align:center;padding:20px 8px;color:var(--g)"><div style="font-size:34px">✅</div><div style="margin-top:6px">OS finalizada.</div></div>';
+      f.innerHTML='<div></div>'+btn('at-fechar','btn-gray','Fechar');
+    } else {
+      c.innerHTML='<div style="padding:18px;text-align:center;color:var(--tx2)">Status: '+(MOS_ST_LABEL[status]||status)+'</div>';
+      f.innerHTML='<div></div>'+btn('at-fechar','btn-gray','Fechar');
+    }
+    wire();
+  }
+  function wire(){
+    const q=id=>ov.querySelector('#'+id);
+    if(q('at-fechar')) q('at-fechar').onclick=fechar;
+    if(q('at-ant')) q('at-ant').onclick=()=>{ salvarRelato(); if(idx>0){idx--; render();} };
+    if(q('at-prox')) q('at-prox').onclick=()=>{ salvarRelato(); if(idx<passos.length-1){idx++; render();} };
+    if(q('at-desloc')) q('at-desloc').onclick=async function(){ this.disabled=true; setMsg('Registrando...','var(--tx2)'); const {ok,r}=await _atAcao('deslocamento'); if(ok){ status='DS'; o.status='DS'; toast('Deslocamento iniciado ✓','ok'); render(); } else { this.disabled=false; setMsg('Falha: '+((r&&r.erro)||(r&&r.resposta&&r.resposta.message)||'erro')); } };
+    if(q('at-exec')) q('at-exec').onclick=async function(){ this.disabled=true; setMsg('Registrando...','var(--tx2)'); const {ok,r}=await _atAcao('executar'); if(ok){ status='EX'; o.status='EX'; idx=0; toast('Execução iniciada ✓','ok'); render(); } else { this.disabled=false; setMsg('Falha: '+((r&&r.erro)||(r&&r.resposta&&r.resposta.message)||'erro')); } };
+    if(q('at-reag')) q('at-reag').onclick=async function(){ if(!confirm('Marcar a OS para AGENDAMENTO? Ela sai do seu atendimento (O&M reagenda).')) return; const motivo=(prompt('Motivo (opcional):')||'').trim(); this.disabled=true; const {ok,r}=await _atAcao('reagendar',{mensagem:motivo||'Marcada para agendamento pelo técnico.'}); if(ok){ toast('OS marcada p/ agendamento ✓','ok'); fechar(); _mosState.osAll=null; setTimeout(abrirMinhasOS,700);} else { this.disabled=false; setMsg('Falha: '+((r&&r.erro)||(r&&r.resposta&&r.resposta.message)||'erro')); } };
+    if(q('at-fim')) q('at-fim').onclick=async function(){ salvarRelato(); if(!(_encDados.relato||'').trim()){ setMsg('Preencha o Relato (passo 📝).'); return; } if(!confirm('Encerrar a OS #'+idChamado+'?')) return; this.disabled=true; this.textContent='⏳...'; const {ok,r}=await _atAcao('finalizar',{mensagem:_encDados.relato.trim(), id_su_diagnostico:(_encDados.id_su_diagnostico||'')}); if(ok){ toast('OS encerrada ✓','ok'); fechar(); _mosState.osAll=null; setTimeout(abrirMinhasOS,700);} else { this.disabled=false; this.textContent='✅ Encerrar OS'; setMsg('Falha: '+((r&&r.erro)||(r&&r.resposta&&r.resposta.message)||'erro')); } };
+  }
+  ov.querySelector('#at-x').onclick=fechar;
   ov.addEventListener('click',e=>{ if(e.target===ov) fechar(); });
-  ov.querySelector('#enc-ant').onclick=()=>{ salvarTela(); if(idx>0){idx--; pinta();} };
-  ov.querySelector('#enc-prox').onclick=()=>{ salvarTela(); if(idx<passos.length-1){idx++; pinta();} };
-  ov.querySelector('#enc-fim').onclick=async function(){
-    salvarTela();
-    const msg=ov.querySelector('#enc-msg');
-    if(!(_encDados.relato||'').trim()){ msg.style.color='var(--r)'; msg.textContent='Volte ao passo Relato e preencha.'; return; }
-    if(!confirm('Encerrar a OS #'+idChamado+' no IXC?')) return;
-    const btn=this; btn.disabled=true; btn.textContent='⏳...';
-    try {
-      const r=await fetch(WEBHOOK_OS_ACAO,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({acao:'finalizar',id_chamado:String(idChamado),mensagem:_encDados.relato.trim(),id_tecnico:(_mosState.funcId||''),id_su_diagnostico:(_encDados.id_su_diagnostico||'')})}).then(x=>x.json());
-      const ok=r&&r.ok&&r.resposta&&(r.resposta.type==='success'||r.resposta.id);
-      if(ok){ toast('OS encerrada ✓','ok'); fechar(); _mosState.osAll=null; setTimeout(abrirMinhasOS,700); }
-      else { msg.style.color='var(--r)'; msg.textContent='Falha: '+((r&&r.erro)||(r&&r.resposta&&r.resposta.message)||'erro'); btn.disabled=false; btn.textContent='✅ Encerrar OS'; }
-    } catch(e){ msg.style.color='var(--r)'; msg.textContent='Erro: '+(e.message||''); btn.disabled=false; btn.textContent='✅ Encerrar OS'; }
-  };
-  pinta();
+  render();
 }
-async function _osFinalizar(idChamado){ _osAbrirEncerramento(idChamado); }
+async function _osFinalizar(idChamado){ _osAtendimento(idChamado); }
 // Wiring (os elementos já existem no index.html)
 (function(){
   const b=document.getElementById('btn-minhas-os'); if(b) b.addEventListener('click', abrirMinhasOS);
