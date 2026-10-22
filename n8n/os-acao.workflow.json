@@ -1,0 +1,76 @@
+{
+  "name": "os-acao (TESTE)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "os-acao",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "wh-osacao",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ],
+      "webhookId": "os-acao"
+    },
+    {
+      "parameters": {
+        "jsCode": "// os-acao — ESCRITA de OS no IXC. DEPLOY NO n8n DE TESTE (testes-n8n-testes...).\n// Fase 1 (segura): acao='mensagem' registra uma observação na OS. NÃO muda status.\n// Trava: nesta fase só aceita a OS de teste.\n// Entrada: { acao:'mensagem', id_chamado, mensagem, id_tecnico }\nconst IXC_BASE  = 'https://ixc.carajasnet.com/webservice/v1';\nconst IXC_TOKEN = 'COLE_O_TOKEN_BASIC_DO_IXC'; // mesmo Basic auth dos fluxos de produção (usuário com ESCRITA)\nconst SOMENTE_OS_TESTE = '1167568';            // '' = libera geral (só depois de validado)\n\nconst body = $input.first().json.body || $input.first().json;\nconst acao = String(body.acao || '').trim();\nconst idChamado = String(body.id_chamado || '').trim();\nif (!idChamado) return [{ json:{ ok:false, erro:'id_chamado é obrigatório' } }];\nif (SOMENTE_OS_TESTE && idChamado !== SOMENTE_OS_TESTE)\n  return [{ json:{ ok:false, erro:'nesta fase só a OS de teste '+SOMENTE_OS_TESTE } }];\n\nfunction nowIX(){ const d=new Date(), p=n=>String(n).padStart(2,'0');\n  return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds()); }\nasync function ixcWrite(endpoint, payload){\n  return await this.helpers.httpRequest({ method:'POST', url:`${IXC_BASE}/${endpoint}`,\n    headers:{ 'Authorization':'Basic '+IXC_TOKEN, 'Content-Type':'application/json' }, body: payload, json:true });\n}\nfunction errInfo(e){ const c=e.httpCode||e.statusCode||(e.response&&e.response.statusCode)||''; let d='';\n  try{ const b=e.response&&e.response.body; if(b) d=typeof b==='string'?b:JSON.stringify(b); }catch(_){}\n  return 'IXC: HTTP '+c+' '+(e.message||'')+(d?(' :: '+String(d).slice(0,500)):''); }\n\ntry {\n  if (acao === 'mensagem'){\n    const msg = String(body.mensagem || '').trim();\n    if (!msg) return [{ json:{ ok:false, erro:'mensagem é obrigatória' } }];\n    const payload = { id_chamado:idChamado, mensagem:msg, id_tecnico:String(body.id_tecnico||''), data_inicio:nowIX(), data_final:nowIX() };\n    const r = await ixcWrite.call(this, 'su_oss_chamado_mensagem', payload);\n    return [{ json:{ ok:true, acao, id_chamado:idChamado, resposta:r } }];\n  }\n  return [{ json:{ ok:false, erro:'ação ainda não suportada: '+acao } }];\n} catch(e){\n  return [{ json:{ ok:false, erro: errInfo(e) } }];\n}\n"
+      },
+      "id": "code-osacao",
+      "name": "Code",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "firstIncomingItem",
+        "options": {}
+      },
+      "id": "resp-osacao",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        800,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
