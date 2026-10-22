@@ -1294,11 +1294,16 @@ function _mosPrependOSCard(o){
   if(latlng) topBtns+='<button class="btn-sm btn-gray" data-action="link" data-p="https://www.google.com/maps?q='+latlng+'">📍 Mapa</button>';
   topBtns+='<button class="btn-sm btn-gray" data-action="mos-voltar-lista">← Minhas OS</button>';
   body+='<div class="btns" style="margin-top:8px">'+topBtns+'</div>';
-  // UM fluxo contínuo de atendimento (deslocamento → execução → encerramento), numa tela só.
+  // Deslocamento = botão rápido (AG). Do Executar pra frente = fluxo contínuo (modal).
   var st=String(o.status||'');
+  var acao='';
+  if (['A','AN','EN','AS','AG'].indexOf(st)>=0) acao='<button class="btn-sm btn-blue" data-action="os-deslocamento" data-p="'+o.id+'">🚚 Iniciar deslocamento</button>';
+  else if (st==='DS') acao='<button class="btn-sm btn-green" data-action="os-atender" data-p="'+o.id+'">▶ Executar (cheguei)</button>';
+  else if (st==='EX') acao='<button class="btn-sm btn-blue" data-action="os-atender" data-p="'+o.id+'">▶ Continuar atendimento</button>';
+  var reag=(['F','RAG'].indexOf(st)<0)?'<button class="btn-sm btn-yellow" data-action="os-reagendar" data-p="'+o.id+'">🕐 P/ agendamento</button>':'';
   var inner = (st==='F') ? '<span style="font-size:12px;color:var(--g)">✅ OS finalizada</span>'
             : (st==='RAG') ? '<span style="font-size:12px;color:var(--tx2)">🔒 aguardando reagendamento</span>'
-            : '<button class="btn-sm btn-blue" data-action="os-atender" data-p="'+o.id+'">▶ Atender OS</button>';
+            : (acao+reag);
   body+='<div style="margin-top:8px"><div style="font-size:11px;color:var(--tx2);margin-bottom:4px">Status: '+(MOS_ST_LABEL[st]||st)+'</div>'
     +'<div class="btns">'+inner+'</div></div>';
   const html='<div id="os-card-topo" style="background:var(--bg2);border:1px solid var(--y3);border-radius:10px;padding:12px;margin-bottom:10px">'
@@ -1356,14 +1361,19 @@ async function _osExecutar(idChamado){
 // Dados coletados no encerramento (persistem entre as telas)
 let _encDados = {};
 let _encDiag = null; // cache de su_diagnostico (ativos)
-async function _encCarregarDiag(){
+async function _encCarregarDiag(setor){
   if (_encDiag) return _encDiag;
   try {
-    const r = await ixcGet('su_diagnostico', { qtype:'su_diagnostico.ativo', query:'S', oper:'=', page:'1', rp:'1000', sortname:'su_diagnostico.descricao', sortorder:'asc' });
-    _encDiag = (r && r.registros) || [];
+    // via webhook de teste (os-acao/listar) — a leitura de produção bloqueia su_diagnostico
+    const params = { qtype:'su_diagnostico.ativo', query:'S', oper:'=', page:'1', rp:'1000', sortname:'su_diagnostico.descricao', sortorder:'asc' };
+    const r = await fetch(WEBHOOK_OS_ACAO, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ acao:'listar', endpoint:'su_diagnostico', params }) }).then(x=>x.json());
+    let arr = (r && Array.isArray(r.registros)) ? r.registros : [];
+    // guarda o setor da OS p/ priorizar (não exclui — o assunto não é exposto na API)
+    _encDiag = arr; _encDiagSetor = setor||null;
   } catch(e){ _encDiag = []; }
   return _encDiag;
 }
+let _encDiagSetor = null;
 function _encDiagWire(ov){
   const inp=ov.querySelector('#enc-diag-busca'), lista=ov.querySelector('#enc-diag-lista');
   if(!inp||!lista) return;
@@ -1372,7 +1382,8 @@ function _encDiagWire(ov){
     if(!_encDiag){ lista.innerHTML='<div class="olt-status-msg cinza">Carregando diagnósticos...</div>'; return; }
     let arr=_encDiag;
     if(term) arr=arr.filter(d=>String(d.descricao||'').toUpperCase().indexOf(term)>=0);
-    arr=arr.slice(0,60);
+    else if(_encDiagSetor){ const s=arr.filter(d=>String(d.id_setor)===String(_encDiagSetor)); if(s.length) arr=s; } // prioriza o setor da OS
+    arr=arr.slice(0,80);
     if(!arr.length){ lista.innerHTML='<div class="empty">Nada encontrado.</div>'; return; }
     lista.innerHTML=arr.map(d=>{
       const sel=String(_encDados.id_su_diagnostico||'')===String(d.id);
@@ -1390,7 +1401,7 @@ function _osAtendimento(idChamado){
   if(!o) return;
   const nome = (_mosState.clienteMap && _mosState.clienteMap[String(o.id_cliente)])||'';
   _encDados = { id_chamado:String(idChamado), relato:'' };
-  _encCarregarDiag();
+  _encCarregarDiag(o.setor);
   let status = String(o.status||'');
   let idx = 0;
   const emConstr = (txt)=>'<div style="padding:18px 8px;text-align:center;color:var(--tx2);font-size:12px">🚧 '+txt+'<br><small>em construção</small></div>';
@@ -1435,10 +1446,7 @@ function _osAtendimento(idChamado){
   function render(){
     const c=ov.querySelector('#at-content'), f=ov.querySelector('#at-footer'); setMsg('');
     const reagBtn=(['F','RAG'].indexOf(status)<0)?btn('at-reag','btn-yellow','🕐 P/ agendamento'):'';
-    if (['A','AN','EN','AS','AG'].indexOf(status)>=0){
-      c.innerHTML='<div style="text-align:center;padding:14px 8px"><div style="font-size:34px">🚚</div><div style="font-size:13px;color:var(--tx);margin-top:6px">Pronto para iniciar o deslocamento.</div><div style="font-size:11px;color:var(--tx2);margin-top:4px">O cliente pode ser avisado que você está a caminho.</div></div>';
-      f.innerHTML='<div>'+reagBtn+'</div>'+btn('at-desloc','btn-blue','🚚 Iniciar deslocamento');
-    } else if (status==='DS'){
+    if (status==='DS'){
       c.innerHTML='<div style="text-align:center;padding:14px 8px"><div style="font-size:34px">📍</div><div style="font-size:13px;color:var(--tx);margin-top:6px">Em deslocamento. Ao chegar, inicie a execução.</div></div>';
       f.innerHTML='<div>'+reagBtn+'</div>'+btn('at-exec','btn-green','📍 Cheguei — iniciar execução');
     } else if (status==='EX'){
