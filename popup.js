@@ -1354,45 +1354,73 @@ async function _osExecutar(idChamado){
   const obs = (prompt('Observação (opcional):')||'').trim();
   _osAcaoSimples(idChamado, 'executar', obs || 'Em execução.', 'OS em execução ✓');
 }
+// Dados coletados no encerramento (persistem entre as telas)
+let _encDados = {};
 function _osAbrirEncerramento(idChamado){
   const o = _mosState.osById && _mosState.osById[String(idChamado)];
   const nome = o ? ((_mosState.clienteMap && _mosState.clienteMap[String(o.id_cliente)])||'') : '';
-  const passo=(ic,t,st)=>'<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--b)"><span style="font-size:15px">'+ic+'</span><span style="flex:1;font-size:12px;color:var(--tx)">'+t+'</span><span style="font-size:10px;color:var(--tx2)">'+st+'</span></div>';
+  _encDados = { id_chamado:String(idChamado), relato:'' };
+  // Telas do encerramento (tela a tela). 'render' devolve o HTML do conteúdo.
+  const emConstr = (txt)=>'<div style="padding:20px 8px;text-align:center;color:var(--tx2);font-size:12px">🚧 '+txt+'<br><small>em construção</small></div>';
+  const passos = [
+    { ic:'📝', titulo:'Relato', render:()=>'<label style="font-size:12px;color:var(--tx);font-weight:600">Relato do técnico *</label>'
+        +'<textarea id="enc-relato" rows="4" style="width:100%;margin-top:6px;padding:8px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx);font-family:inherit" placeholder="O que foi feito no atendimento...">'+(_encDados.relato||'')+'</textarea>' },
+    { ic:'📡', titulo:'Autorizar ONU',        render:()=>emConstr('Autorizar ONU (IXC→OLT)') },
+    { ic:'⚙️', titulo:'Configurar Dispositivo', render:()=>emConstr('Configurar Dispositivo (PPPoE)') },
+    { ic:'📦', titulo:'Produtos / materiais',  render:()=>emConstr('Produtos / materiais') },
+    { ic:'📎', titulo:'Anexos',                render:()=>emConstr('Anexos automáticos (potência/OZmap) + fotos') },
+    { ic:'✍️', titulo:'Assinatura',            render:()=>emConstr('Assinatura do cliente') },
+    { ic:'✅', titulo:'Resumo',                render:()=>'<div style="font-size:12px;color:var(--tx);line-height:1.9">'
+        +'Cliente: <strong>'+(nome||'—')+'</strong><br>'
+        +'Relato: <strong>'+((_encDados.relato||'').trim()||'<span style="color:var(--r)">não preenchido</span>')+'</strong><br>'
+        +'<span style="color:var(--tx2);font-size:11px">Ao encerrar, a OS vai para status Finalizada no IXC.</span></div>' }
+  ];
+  let idx=0;
   const ov=document.createElement('div');
   ov.style.cssText='position:fixed;inset:0;z-index:600;background:rgba(0,0,0,.8);display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow-y:auto';
-  ov.innerHTML='<div style="background:var(--bg2);border:1px solid var(--b2);border-radius:10px;padding:18px;max-width:440px;width:100%;margin:auto">'
-    +'<h3 style="font-family:var(--font-head);color:var(--acc);margin-bottom:4px">✅ Encerrar OS #'+idChamado+'</h3>'
-    +(nome?'<div style="font-size:12px;color:var(--tx2);margin-bottom:10px">👤 '+nome+'</div>':'')
-    +'<label style="font-size:12px;color:var(--tx);font-weight:600">Relato do técnico *</label>'
-    +'<textarea id="enc-relato" rows="3" style="width:100%;margin:4px 0 12px;padding:8px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx);font-family:inherit" placeholder="O que foi feito no atendimento..."></textarea>'
-    +'<div style="font-size:11px;color:var(--tx2);margin-bottom:4px">Passos do encerramento:</div>'
-    +passo('📡','Autorizar ONU (IXC→OLT)','em construção')
-    +passo('⚙️','Configurar Dispositivo (PPPoE)','em construção')
-    +passo('📦','Produtos / materiais','em construção')
-    +passo('📎','Anexos automáticos (potência/OZmap) + fotos','em construção')
-    +passo('✍️','Assinatura','em construção')
+  ov.innerHTML='<div style="background:var(--bg2);border:1px solid var(--b2);border-radius:10px;padding:16px;max-width:460px;width:100%;margin:auto">'
+    +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><h3 style="font-family:var(--font-head);color:var(--acc);flex:1;font-size:16px">✅ Encerrar OS #'+idChamado+'</h3><button class="btn-sm btn-gray" id="enc-x">✕</button></div>'
+    +'<div id="enc-steps" style="display:flex;gap:4px;margin-bottom:10px;flex-wrap:wrap"></div>'
+    +'<div id="enc-titulo" style="font-size:13px;font-weight:700;color:var(--tx);margin-bottom:8px"></div>'
+    +'<div id="enc-conteudo" style="min-height:120px"></div>'
     +'<div id="enc-msg" style="font-size:11px;margin:8px 0;min-height:14px"></div>'
-    +'<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">'
-    +'<button class="btn-sm btn-gray" id="enc-cancel">Cancelar</button>'
-    +'<button class="btn-sm btn-blue" id="enc-finalizar">Encerrar OS</button>'
+    +'<div style="display:flex;gap:8px;justify-content:space-between;margin-top:8px">'
+    +'<button class="btn-sm btn-gray" id="enc-ant">← Anterior</button>'
+    +'<div style="display:flex;gap:8px"><button class="btn-sm btn-blue" id="enc-prox">Próximo →</button>'
+    +'<button class="btn-sm btn-green" id="enc-fim" style="display:none">✅ Encerrar OS</button></div>'
     +'</div></div>';
   document.body.appendChild(ov);
   const fechar=()=>ov.remove();
-  ov.querySelector('#enc-cancel').onclick=fechar;
+  const salvarTela=()=>{ const ta=ov.querySelector('#enc-relato'); if(ta) _encDados.relato=ta.value; };
+  function pinta(){
+    // indicadores
+    ov.querySelector('#enc-steps').innerHTML = passos.map((p,i)=>'<span title="'+p.titulo+'" style="font-size:14px;opacity:'+(i===idx?'1':(i<idx?'.6':'.3'))+'">'+p.ic+'</span>').join('<span style="color:var(--tx3)">·</span>');
+    ov.querySelector('#enc-titulo').textContent = passos[idx].ic+' '+passos[idx].titulo+'  ('+(idx+1)+'/'+passos.length+')';
+    ov.querySelector('#enc-conteudo').innerHTML = passos[idx].render();
+    ov.querySelector('#enc-ant').style.visibility = idx===0?'hidden':'visible';
+    const ultimo = idx===passos.length-1;
+    ov.querySelector('#enc-prox').style.display = ultimo?'none':'';
+    ov.querySelector('#enc-fim').style.display = ultimo?'':'none';
+    ov.querySelector('#enc-msg').textContent='';
+  }
+  ov.querySelector('#enc-x').onclick=fechar;
   ov.addEventListener('click',e=>{ if(e.target===ov) fechar(); });
-  ov.querySelector('#enc-finalizar').onclick=async function(){
-    const relato=(ov.querySelector('#enc-relato').value||'').trim();
+  ov.querySelector('#enc-ant').onclick=()=>{ salvarTela(); if(idx>0){idx--; pinta();} };
+  ov.querySelector('#enc-prox').onclick=()=>{ salvarTela(); if(idx<passos.length-1){idx++; pinta();} };
+  ov.querySelector('#enc-fim').onclick=async function(){
+    salvarTela();
     const msg=ov.querySelector('#enc-msg');
-    if(!relato){ msg.style.color='var(--r)'; msg.textContent='Informe o relato.'; return; }
+    if(!(_encDados.relato||'').trim()){ msg.style.color='var(--r)'; msg.textContent='Volte ao passo Relato e preencha.'; return; }
     if(!confirm('Encerrar a OS #'+idChamado+' no IXC?')) return;
-    const btn=this; btn.disabled=true; btn.textContent='⏳ Encerrando...';
+    const btn=this; btn.disabled=true; btn.textContent='⏳...';
     try {
-      const r=await fetch(WEBHOOK_OS_ACAO,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({acao:'finalizar',id_chamado:String(idChamado),mensagem:relato,id_tecnico:(_mosState.funcId||'')})}).then(x=>x.json());
+      const r=await fetch(WEBHOOK_OS_ACAO,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({acao:'finalizar',id_chamado:String(idChamado),mensagem:_encDados.relato.trim(),id_tecnico:(_mosState.funcId||'')})}).then(x=>x.json());
       const ok=r&&r.ok&&r.resposta&&(r.resposta.type==='success'||r.resposta.id);
       if(ok){ toast('OS encerrada ✓','ok'); fechar(); _mosState.osAll=null; setTimeout(abrirMinhasOS,700); }
-      else { msg.style.color='var(--r)'; msg.textContent='Falha: '+((r&&r.erro)||(r&&r.resposta&&r.resposta.message)||'erro'); btn.disabled=false; btn.textContent='Encerrar OS'; }
-    } catch(e){ msg.style.color='var(--r)'; msg.textContent='Erro: '+(e.message||''); btn.disabled=false; btn.textContent='Encerrar OS'; }
+      else { msg.style.color='var(--r)'; msg.textContent='Falha: '+((r&&r.erro)||(r&&r.resposta&&r.resposta.message)||'erro'); btn.disabled=false; btn.textContent='✅ Encerrar OS'; }
+    } catch(e){ msg.style.color='var(--r)'; msg.textContent='Erro: '+(e.message||''); btn.disabled=false; btn.textContent='✅ Encerrar OS'; }
   };
+  pinta();
 }
 async function _osFinalizar(idChamado){ _osAbrirEncerramento(idChamado); }
 // Wiring (os elementos já existem no index.html)
