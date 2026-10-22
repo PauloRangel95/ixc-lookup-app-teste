@@ -202,6 +202,8 @@ async function mostrarApp(sessao) {
   carregarHistoricoConsultas().then(renderHistorico);
   setState('idle');
   elInput.focus();
+  // Técnico (grupo 4 = Suporte de Campo): tela inicial = Minhas OS
+  if (String(sessao.id_grupo) === '4') { setTimeout(()=>{ try{ abrirMinhasOS(); }catch(e){} }, 250); }
 }
 
 function setState(s) {
@@ -714,6 +716,8 @@ document.addEventListener('click', e => {
   if (action==='potencia-onu')        consultarPotenciaONU(p, p2);
   if (action==='mapear-ozmap')        abrirMapaOZmap(p, p2);
   if (action==='mos-abrir')           { const m=document.getElementById('minhas-os-modal'); if(m) m.style.display='none'; selecionarContrato(p); }
+  if (action==='mos-detalhe')         _mosDetalhe(p);
+  if (action==='mos-voltar')          _mosRenderAba(_mosState.aba);
   if (action==='toggle-pppoe-pass') {
     const disp = btn.parentElement.querySelector('.pass-display');
     if (disp) {
@@ -1122,6 +1126,7 @@ async function abrirMinhasOS(){
   try {
     const r = await ixcGet('su_oss_chamado', { qtype:'su_oss_chamado.id_tecnico', query:String(funcId), oper:'=', page:'1', rp:'300', sortname:'su_oss_chamado.id', sortorder:'desc' });
     _mosState.osAll = (r && r.registros) || [];
+    _mosState.osById = {}; _mosState.osAll.forEach(o=>{ _mosState.osById[String(o.id)]=o; });
   } catch(e){ cont.innerHTML='<div class="olt-status-msg amarelo">Erro ao carregar OS: '+(e.message||'')+'</div>'; return; }
   _mosRenderAba(_mosState.aba);
 }
@@ -1150,9 +1155,54 @@ function _mosRenderAba(aba){
       +'<div style="font-size:12px;color:var(--tx);margin-bottom:3px">'+assunto+'</div>'
       +(endereco?'<div style="font-size:11px;color:var(--tx2)">📍 '+endereco+(o.complemento?(' — '+o.complemento):'')+'</div>':'')
       +(msgCut?'<div style="font-size:11px;color:var(--tx2);margin-top:4px;white-space:pre-wrap">'+msgCut+(msg.length>180?'…':'')+'</div>':'')
-      +(contrato?'<div class="btns" style="margin-top:6px"><button class="btn-sm btn-blue" data-action="mos-abrir" data-p="'+contrato+'">Abrir contrato #'+contrato+'</button></div>':'')
+      +'<div class="btns" style="margin-top:6px">'
+      +'<button class="btn-sm btn-gray" data-action="mos-detalhe" data-p="'+o.id+'">🔎 Ver OS</button>'
+      +(contrato?'<button class="btn-sm btn-blue" data-action="mos-abrir" data-p="'+contrato+'">Abrir contrato #'+contrato+'</button>':'')
+      +'</div>'
       +'</div>';
   }).join('');
+}
+async function _mosDetalhe(osId){
+  const o = _mosState.osById && _mosState.osById[String(osId)];
+  const cont=document.getElementById('mos-conteudo'); if(!cont||!o) return;
+  const asn=_mosState.assuntos||{};
+  const assunto = asn[String(o.id_assunto)] || ('Assunto #'+o.id_assunto);
+  const stB = badge(MOS_ST_LABEL[o.status]||o.status, MOS_ST_COR[o.status]||'cinza');
+  const pr = MOS_PRIOR[o.prioridade]; const prB = pr?badge(pr[0],pr[1]):'';
+  const endereco = [o.endereco,o.bairro,o.complemento].filter(Boolean).join(', ');
+  const contrato = (o.id_contrato_kit && String(o.id_contrato_kit)!=='0') ? String(o.id_contrato_kit) : '';
+  const latlng = (o.latitude && o.longitude && String(o.latitude)!=='0') ? (o.latitude+','+o.longitude) : '';
+  let h = '<button class="btn-sm btn-gray" data-action="mos-voltar" style="margin-bottom:10px">← Voltar</button>';
+  h += '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px"><strong style="font-size:14px;color:var(--tx)">OS #'+o.id+(o.protocolo?' · '+o.protocolo:'')+'</strong> '+stB+' '+prB+'</div>';
+  h += mrow('Assunto', assunto);
+  h += mrow('Aberta em', fmt(o.data_abertura));
+  h += mrow('Agendada',  fmt(o.data_agenda));
+  if (fmt(o.data_hora_execucao)) h += mrow('Execução',  fmt(o.data_hora_execucao));
+  if (fmt(o.data_fechamento))    h += mrow('Fechada em', fmt(o.data_fechamento));
+  if (endereco) h += mrow('Endereço', endereco);
+  if (contrato) h += mrow('Contrato', '#'+contrato);
+  if (o.id_cliente) h += mrow('Cliente (id)', o.id_cliente);
+  if (o.id_login)   h += mrow('Login (id)', o.id_login);
+  if (o.mensagem) h += '<div style="margin-top:6px;font-size:12px"><b>Relato:</b><div style="white-space:pre-wrap;color:var(--tx2)">'+o.mensagem+'</div></div>';
+  let btns='';
+  if (latlng)   btns += '<button class="btn-sm btn-gray" data-action="link" data-p="https://www.google.com/maps?q='+latlng+'">📍 Mapa</button>';
+  if (contrato) btns += '<button class="btn-sm btn-blue" data-action="mos-abrir" data-p="'+contrato+'">Abrir contrato</button>';
+  if (btns) h += '<div class="btns" style="margin-top:8px">'+btns+'</div>';
+  h += '<div style="margin-top:10px;padding:8px;border:1px dashed var(--b2);border-radius:8px;font-size:11px;color:var(--tx2)">⚙ Ações (assumir · iniciar deslocamento · executar · finalizar · reagendar) — <b>em breve</b> (fase de escrita, no n8n de teste).</div>';
+  h += '<div id="mos-msgs" style="margin-top:10px"><div class="olt-status-msg cinza">Carregando histórico...</div></div>';
+  cont.innerHTML = h;
+  try {
+    const r = await ixcGet('su_oss_chamado_mensagem', { qtype:'su_oss_chamado_mensagem.id_chamado', query:String(o.id), oper:'=', page:'1', rp:'50', sortname:'su_oss_chamado_mensagem.id', sortorder:'desc' });
+    const msgs = (r && r.registros) || [];
+    const el=document.getElementById('mos-msgs'); if(!el) return;
+    if (!msgs.length){ el.innerHTML='<div class="empty">Sem mensagens/interações.</div>'; return; }
+    el.innerHTML = '<div style="font-size:12px;font-weight:700;color:var(--tx);margin-bottom:6px">Histórico ('+msgs.length+')</div>'+
+      msgs.map(m=>{
+        const d=fmt(m.data_final)||fmt(m.data_inicio)||fmt(m.data)||'';
+        const st=m.status?(' '+badge(MOS_ST_LABEL[m.status]||m.status, MOS_ST_COR[m.status]||'cinza')):'';
+        return '<div style="border-left:2px solid var(--b2);padding:4px 8px;margin-bottom:6px"><div style="font-size:10px;color:var(--tx2)">'+d+st+'</div><div style="font-size:12px;white-space:pre-wrap;color:var(--tx)">'+((m.mensagem||'').trim()||'—')+'</div></div>';
+      }).join('');
+  } catch(e){ const el=document.getElementById('mos-msgs'); if(el) el.innerHTML='<div class="olt-status-msg amarelo">Erro ao carregar histórico: '+(e.message||'')+'</div>'; }
 }
 // Wiring (os elementos já existem no index.html)
 (function(){
