@@ -1165,7 +1165,8 @@ function _mosRenderAba(aba){
     const msgCut = msg.slice(0,180);
     const contrato = (o.id_contrato_kit && String(o.id_contrato_kit)!=='0') ? String(o.id_contrato_kit) : '';
     const cliNome=(_mosState.clienteMap && _mosState.clienteMap[String(o.id_cliente)]) || (o.id_cliente?('Cliente #'+o.id_cliente):'');
-    return '<div data-action="mos-entrar" data-p="'+o.id+'" style="background:var(--bg);border:1px solid var(--b);border-radius:8px;padding:10px;margin-bottom:8px;cursor:pointer" title="Abrir OS (carrega o cliente completo)">'
+    const readOnly=(aba==='reagendar'); // OS marcada p/ reagendar: vê mas não interage
+    return '<div '+(readOnly?'':'data-action="mos-entrar" data-p="'+o.id+'" style="cursor:pointer" ')+'style="background:var(--bg);border:1px solid var(--b);border-radius:8px;padding:10px;margin-bottom:8px'+(readOnly?';opacity:.85':';cursor:pointer')+'"'+(readOnly?'':' title="Abrir OS (carrega o cliente completo)"')+'>'
       +'<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap">'
       +'<strong style="font-size:13px;color:var(--tx)">OS #'+o.id+'</strong> '+stB+' '+prB
       +(data?'<span style="margin-left:auto;font-size:11px;color:var(--tx2)">📅 '+data+'</span>':'')+'</div>'
@@ -1174,8 +1175,9 @@ function _mosRenderAba(aba){
       +(endereco?'<div style="font-size:11px;color:var(--tx2)">📍 '+endereco+(o.complemento?(' — '+o.complemento):'')+'</div>':'')
       +(msgCut?'<div style="font-size:11px;color:var(--tx2);margin-top:4px;white-space:pre-wrap">'+msgCut+(msg.length>180?'…':'')+'</div>':'')
       +'<div class="btns" style="margin-top:6px">'
-      +'<button class="btn-sm btn-blue" data-action="mos-entrar" data-p="'+o.id+'">📂 Abrir OS (cliente completo)</button>'
-      +'<button class="btn-sm btn-gray" data-action="mos-detalhe" data-p="'+o.id+'">🔎 Só a OS</button>'
+      +(readOnly
+          ? '<button class="btn-sm btn-gray" data-action="mos-detalhe" data-p="'+o.id+'">🔎 Ver (somente leitura)</button><span style="font-size:11px;color:var(--tx2);align-self:center;margin-left:4px">🔒 aguardando reagendamento</span>'
+          : '<button class="btn-sm btn-blue" data-action="mos-entrar" data-p="'+o.id+'">📂 Abrir OS (cliente completo)</button><button class="btn-sm btn-gray" data-action="mos-detalhe" data-p="'+o.id+'">🔎 Só a OS</button>')
       +'</div>'
       +'</div>';
   }).join('');
@@ -2514,17 +2516,34 @@ function renderOZmapHTML(d) {
   if (btns) h += `<div class="btns">${btns}</div>`;
   return h;
 }
-function _mosRenderPendencias(unmapped){
-  const el=document.getElementById('results'); if(!el) return;
+// Painel de alertas consolidado (leitura): bloqueado · OLT offline/sinal · sem OZmap.
+// Lê o estado de dadosAtual; é chamado quando OLT/OZmap terminam (cada chamada reconstrói).
+function _mosRenderAlertas(){
+  const el=document.getElementById('results'); if(!el || !dadosAtual) return;
   const old=document.getElementById('pend-banner'); if(old) old.remove();
-  if(!unmapped || !unmapped.length) return;
-  const botoes = unmapped.map(l=>'<button class="btn-sm btn-blue" data-action="mapear-ozmap" data-p="'+String(l.id)+'" data-p2="'+(l.login||'').replace(/"/g,'&quot;')+'">🗺️ Mapear '+(l.login||('#'+l.id))+'</button>').join(' ');
-  const div=document.createElement('div');
-  div.id='pend-banner';
-  div.style.cssText='background:rgba(245,158,11,.14);border:1px solid var(--y3);border-left:4px solid var(--y);border-radius:8px;padding:10px 12px;margin-bottom:10px';
-  div.innerHTML='<div style="font-size:13px;font-weight:700;color:var(--y);margin-bottom:4px">⚠ Cliente sem OZmap</div>'
-    +'<div style="font-size:11px;color:var(--tx2);margin-bottom:6px">Login não mapeado na rede (OZmap). Mapear agora pra não deixar pendência:</div>'
-    +'<div class="btns">'+botoes+'</div>';
+  const alertas=[]; // {cls, html, btn?}
+  const logins = dadosAtual.logins||[];
+  // Cliente bloqueado
+  const stAcesso = dadosAtual.contrato && (dadosAtual.contrato.status_acesso || dadosAtual.contrato.status);
+  if (stAcesso && !['Ativo','Disponível'].includes(stAcesso)) alertas.push({cls:'vermelho', html:'🔒 <b>Cliente bloqueado</b> ('+stAcesso+')'});
+  // OLT: offline / sem energia / LOSS, ou sinal fraco
+  const oc = dadosAtual._olt_cloud || {};
+  logins.forEach(l=>{
+    const o=oc[l.id]; if(!o) return;
+    const nome=l.login||('#'+l.id);
+    if (o.status && o.status!=='Online') alertas.push({cls:'vermelho', html:'🔴 <b>'+nome+'</b> — '+o.status});
+    else if (o.sinal_onu!=null && isFinite(Number(o.sinal_onu)) && Number(o.sinal_onu) < CFG_SINAL.amarelo) alertas.push({cls:'amarelo', html:'📉 <b>'+nome+'</b> — sinal '+o.sinal_onu+' dBm (fraco)'});
+  });
+  // OZmap não mapeado
+  (dadosAtual._oz_unmapped||[]).forEach(l=>alertas.push({cls:'amarelo', html:'🗺️ <b>'+(l.login||('#'+l.id))+'</b> — sem OZmap', btn:'<button class="btn-sm btn-blue" data-action="mapear-ozmap" data-p="'+l.id+'" data-p2="'+(l.login||'').replace(/"/g,'&quot;')+'">Mapear</button>'}));
+  if(!alertas.length) return;
+  const hasRed = alertas.some(a=>a.cls==='vermelho');
+  const bc = hasRed?'var(--r)':'var(--y)';
+  const bg = hasRed?'rgba(220,60,60,.12)':'rgba(245,158,11,.14)';
+  const itens = alertas.map(a=>'<div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--tx);padding:3px 0"><span style="flex:1">'+a.html+'</span>'+(a.btn||'')+'</div>').join('');
+  const div=document.createElement('div'); div.id='pend-banner';
+  div.style.cssText='background:'+bg+';border:1px solid '+bc+';border-left:4px solid '+bc+';border-radius:8px;padding:10px 12px;margin-bottom:10px';
+  div.innerHTML='<div style="font-size:13px;font-weight:700;color:'+bc+';margin-bottom:4px">⚠ Pendências / alertas</div>'+itens;
   const osCard=document.getElementById('os-card-topo');
   if (osCard) el.insertBefore(div, osCard.nextSibling);
   else el.insertBefore(div, el.firstChild);
@@ -2561,8 +2580,9 @@ async function buscarOZmap(logins) {
     if (ozPrimeiro) s.innerHTML = renderOZmapHTML(ozPrimeiro);
     else s.remove(); // sem dado no OZmap: não polui a OS
   });
-  // Pendência destacada no topo: login(s) sem OZmap
-  _mosRenderPendencias(unmapped);
+  // Alertas no topo: guarda os não-mapeados e reconstrói o painel
+  if (dadosAtual) dadosAtual._oz_unmapped = unmapped;
+  _mosRenderAlertas();
 }
 
 // ═══════════════════════════════════════════════
@@ -2991,6 +3011,7 @@ async function buscarOLT(logins) {
 
     // Salvar olt_cloud em dadosAtual para o copiar tudo
     if (dadosAtual) dadosAtual._olt_cloud = olt_cloud;
+    try { _mosRenderAlertas(); } catch(e){}   // atualiza alertas (offline/sinal) quando a OLT responde
 
     // Mostrar erros + botão fallback IXC
     if (erros.length) {
