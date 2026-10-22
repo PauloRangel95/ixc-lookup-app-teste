@@ -1070,12 +1070,13 @@ async function _mosResolverTecnico(){
   _mosState._erro = null; _mosState._dbg = [];
   const uid   = sessaoAtual && sessaoAtual.usuario_id;
   const email = sessaoAtual && sessaoAtual.usuario_email;
-  _mosState._dbg.push('sessão: usuario_id='+uid+' · email='+email);
-  // Ordem: usuarios.funcionario → funcionarios.email → funcionarios.usuario_id
+  const nome  = sessaoAtual && sessaoAtual.usuario_nome;
+  _mosState._dbg.push('sessão: usuario_id='+uid+' · nome='+nome+' · email='+email);
+  // usuarios é bloqueado no ixc-leituras → resolve por funcionarios (nome → email → usuario_id)
   const tries = [];
-  if (uid)   tries.push(['usuarios',     {qtype:'usuarios.id',             query:String(uid)},   'funcionario']);
-  if (email) tries.push(['funcionarios', {qtype:'funcionarios.email',      query:String(email)}, 'id']);
-  if (uid)   tries.push(['funcionarios', {qtype:'funcionarios.usuario_id', query:String(uid)},   'id']);
+  if (nome)  tries.push(['funcionarios', {qtype:'funcionarios.funcionario', query:String(nome)},  'id']);
+  if (email) tries.push(['funcionarios', {qtype:'funcionarios.email',       query:String(email)}, 'id']);
+  if (uid)   tries.push(['funcionarios', {qtype:'funcionarios.usuario_id',  query:String(uid)},   'id']);
   for (const t of tries){
     const ep=t[0], filt=t[1], campo=t[2];
     try {
