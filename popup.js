@@ -1295,10 +1295,7 @@ function _mosPrependOSCard(o){
   body+='<div style="margin-top:8px"><div style="font-size:11px;color:var(--tx2);margin-bottom:4px">Ações da OS (teste):</div>'
     +'<div class="btns">'
     +'<button class="btn-sm btn-green" data-action="os-executar" data-p="'+o.id+'">▶ Executar</button>'
-    +'<button class="btn-sm btn-blue" data-action="os-finalizar" data-p="'+o.id+'">✅ Finalizar</button>'
-    +'</div>'
-    +'<div class="btns" style="margin-top:4px">'
-    +'<button class="btn-sm btn-gray" data-action="os-mensagem" data-p="'+o.id+'">➕ Mensagem</button>'
+    +'<button class="btn-sm btn-blue" data-action="os-finalizar" data-p="'+o.id+'">✅ Encerrar OS</button>'
     +'<button class="btn-sm btn-yellow" data-action="os-reagendar" data-p="'+o.id+'">🕐 P/ agendamento</button>'
     +'</div></div>';
   const html='<div id="os-card-topo" style="background:var(--bg2);border:1px solid var(--y3);border-radius:10px;padding:12px;margin-bottom:10px">'
@@ -1349,12 +1346,47 @@ async function _osExecutar(idChamado){
   const obs = (prompt('Observação (opcional):')||'').trim();
   _osAcaoSimples(idChamado, 'executar', obs || 'Em execução.', 'OS em execução ✓');
 }
-async function _osFinalizar(idChamado){
-  if(!confirm('FINALIZAR a OS #'+idChamado+'?\n\nIsso encerra a OS no IXC.')) return;
-  const relato = (prompt('Relato de encerramento (obrigatório):')||'').trim();
-  if(!relato){ toast('Relato é obrigatório para finalizar','err'); return; }
-  _osAcaoSimples(idChamado, 'finalizar', relato, 'OS finalizada ✓');
+function _osAbrirEncerramento(idChamado){
+  const o = _mosState.osById && _mosState.osById[String(idChamado)];
+  const nome = o ? ((_mosState.clienteMap && _mosState.clienteMap[String(o.id_cliente)])||'') : '';
+  const passo=(ic,t,st)=>'<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--b)"><span style="font-size:15px">'+ic+'</span><span style="flex:1;font-size:12px;color:var(--tx)">'+t+'</span><span style="font-size:10px;color:var(--tx2)">'+st+'</span></div>';
+  const ov=document.createElement('div');
+  ov.style.cssText='position:fixed;inset:0;z-index:600;background:rgba(0,0,0,.8);display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow-y:auto';
+  ov.innerHTML='<div style="background:var(--bg2);border:1px solid var(--b2);border-radius:10px;padding:18px;max-width:440px;width:100%;margin:auto">'
+    +'<h3 style="font-family:var(--font-head);color:var(--acc);margin-bottom:4px">✅ Encerrar OS #'+idChamado+'</h3>'
+    +(nome?'<div style="font-size:12px;color:var(--tx2);margin-bottom:10px">👤 '+nome+'</div>':'')
+    +'<label style="font-size:12px;color:var(--tx);font-weight:600">Relato do técnico *</label>'
+    +'<textarea id="enc-relato" rows="3" style="width:100%;margin:4px 0 12px;padding:8px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx);font-family:inherit" placeholder="O que foi feito no atendimento..."></textarea>'
+    +'<div style="font-size:11px;color:var(--tx2);margin-bottom:4px">Passos do encerramento:</div>'
+    +passo('📡','Autorizar ONU (IXC→OLT)','em construção')
+    +passo('⚙️','Configurar Dispositivo (PPPoE)','em construção')
+    +passo('📦','Produtos / materiais','em construção')
+    +passo('📎','Anexos automáticos (potência/OZmap) + fotos','em construção')
+    +passo('✍️','Assinatura','em construção')
+    +'<div id="enc-msg" style="font-size:11px;margin:8px 0;min-height:14px"></div>'
+    +'<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">'
+    +'<button class="btn-sm btn-gray" id="enc-cancel">Cancelar</button>'
+    +'<button class="btn-sm btn-blue" id="enc-finalizar">Encerrar OS</button>'
+    +'</div></div>';
+  document.body.appendChild(ov);
+  const fechar=()=>ov.remove();
+  ov.querySelector('#enc-cancel').onclick=fechar;
+  ov.addEventListener('click',e=>{ if(e.target===ov) fechar(); });
+  ov.querySelector('#enc-finalizar').onclick=async function(){
+    const relato=(ov.querySelector('#enc-relato').value||'').trim();
+    const msg=ov.querySelector('#enc-msg');
+    if(!relato){ msg.style.color='var(--r)'; msg.textContent='Informe o relato.'; return; }
+    if(!confirm('Encerrar a OS #'+idChamado+' no IXC?')) return;
+    const btn=this; btn.disabled=true; btn.textContent='⏳ Encerrando...';
+    try {
+      const r=await fetch(WEBHOOK_OS_ACAO,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({acao:'finalizar',id_chamado:String(idChamado),mensagem:relato,id_tecnico:(_mosState.funcId||'')})}).then(x=>x.json());
+      const ok=r&&r.ok&&r.resposta&&(r.resposta.type==='success'||r.resposta.id);
+      if(ok){ toast('OS encerrada ✓','ok'); fechar(); _mosState.osAll=null; setTimeout(abrirMinhasOS,700); }
+      else { msg.style.color='var(--r)'; msg.textContent='Falha: '+((r&&r.erro)||(r&&r.resposta&&r.resposta.message)||'erro'); btn.disabled=false; btn.textContent='Encerrar OS'; }
+    } catch(e){ msg.style.color='var(--r)'; msg.textContent='Erro: '+(e.message||''); btn.disabled=false; btn.textContent='Encerrar OS'; }
+  };
 }
+async function _osFinalizar(idChamado){ _osAbrirEncerramento(idChamado); }
 // Wiring (os elementos já existem no index.html)
 (function(){
   const b=document.getElementById('btn-minhas-os'); if(b) b.addEventListener('click', abrirMinhasOS);
