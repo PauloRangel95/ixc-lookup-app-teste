@@ -1151,7 +1151,7 @@ function _mosRenderAba(aba){
     const msg = (o.mensagem||'').trim();
     const msgCut = msg.slice(0,180);
     const contrato = (o.id_contrato_kit && String(o.id_contrato_kit)!=='0') ? String(o.id_contrato_kit) : '';
-    return '<div style="background:var(--bg);border:1px solid var(--b);border-radius:8px;padding:10px;margin-bottom:8px">'
+    return '<div data-action="mos-entrar" data-p="'+o.id+'" style="background:var(--bg);border:1px solid var(--b);border-radius:8px;padding:10px;margin-bottom:8px;cursor:pointer" title="Abrir OS (carrega o cliente completo)">'
       +'<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap">'
       +'<strong style="font-size:13px;color:var(--tx)">OS #'+o.id+(o.protocolo?' · '+o.protocolo:'')+'</strong> '+stB+' '+prB
       +(data?'<span style="margin-left:auto;font-size:11px;color:var(--tx2)">📅 '+data+'</span>':'')+'</div>'
@@ -1159,8 +1159,8 @@ function _mosRenderAba(aba){
       +(endereco?'<div style="font-size:11px;color:var(--tx2)">📍 '+endereco+(o.complemento?(' — '+o.complemento):'')+'</div>':'')
       +(msgCut?'<div style="font-size:11px;color:var(--tx2);margin-top:4px;white-space:pre-wrap">'+msgCut+(msg.length>180?'…':'')+'</div>':'')
       +'<div class="btns" style="margin-top:6px">'
-      +(contrato?'<button class="btn-sm btn-blue" data-action="mos-entrar" data-p="'+o.id+'">📂 Entrar na OS</button>':'')
-      +'<button class="btn-sm btn-gray" data-action="mos-detalhe" data-p="'+o.id+'">🔎 Detalhe</button>'
+      +'<button class="btn-sm btn-blue" data-action="mos-entrar" data-p="'+o.id+'">📂 Abrir OS (cliente completo)</button>'
+      +'<button class="btn-sm btn-gray" data-action="mos-detalhe" data-p="'+o.id+'">🔎 Só a OS</button>'
       +'</div>'
       +'</div>';
   }).join('');
@@ -1234,11 +1234,12 @@ function _mosRenderContexto(o){
   if(!o){ bar.style.display='none'; bar.innerHTML=''; return; }
   const asn=_mosState.assuntos||{}; const assunto=asn[String(o.id_assunto)]||('Assunto #'+o.id_assunto);
   const stB=badge(MOS_ST_LABEL[o.status]||o.status, MOS_ST_COR[o.status]||'cinza');
+  const ag=fmt(o.data_agenda);
   bar.style.display='';
   bar.innerHTML='<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
     +'<button class="btn-sm btn-gray" data-action="mos-voltar-lista" title="Voltar à lista de OS">← Minhas OS</button>'
     +'<strong style="font-size:12px;color:var(--acc)">OS #'+o.id+'</strong> '+stB
-    +'<span style="font-size:11px;color:var(--tx2)">'+assunto+'</span>'
+    +'<span style="font-size:11px;color:var(--tx2)">'+assunto+(ag?(' · 📅 '+ag):'')+'</span>'
     +'<button class="btn-sm btn-blue" data-action="mos-detalhe-modal" data-p="'+o.id+'" style="margin-left:auto" title="Detalhe e ações da OS">📋 OS / Ações</button>'
     +'</div>';
 }
