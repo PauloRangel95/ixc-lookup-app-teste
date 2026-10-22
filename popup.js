@@ -1067,13 +1067,19 @@ let _mosState = { funcId:null, funcNome:null, assuntos:null, aba:'agendadas', os
 
 async function _mosResolverTecnico(){
   if (_mosState.funcId) return _mosState.funcId;
-  _mosState._erro = null;
+  _mosState._erro = null; _mosState._dbg = [];
   const uid = sessaoAtual && sessaoAtual.usuario_id;
+  _mosState._dbg.push('sessão: usuario_id='+uid+' · login='+(sessaoAtual&&sessaoAtual.usuario_login)+' · email='+(sessaoAtual&&sessaoAtual.usuario_email));
   // 1) vínculo oficial: usuarios.funcionario ("Colaborador/Responsável")
   if (uid){
     try {
       const r = await ixcGet('usuarios', { qtype:'usuarios.id', query:String(uid), oper:'=', page:'1', rp:'1', sortname:'usuarios.id', sortorder:'asc' });
       const u = r && r.registros && r.registros[0];
+      _mosState._dbg.push('usuarios(id='+uid+'): total='+(r&&r.total)+' achou='+(!!u));
+      if (u){
+        const fk = Object.keys(u).filter(k=>/func|colab|respons/i.test(k)).map(k=>k+'='+u[k]);
+        _mosState._dbg.push('reg usuarios: id='+u.id+' | '+(fk.join(' | ')||'(sem campo func/colab)'));
+      }
       if (u && u.funcionario && String(u.funcionario)!=='0'){ _mosState.funcId=String(u.funcionario); _mosState.funcNome=u.nome||null; return _mosState.funcId; }
     } catch(e){ _mosState._erro = 'usuarios: '+(e.message||e); }
   }
@@ -1106,7 +1112,13 @@ async function abrirMinhasOS(){
   const tec=document.getElementById('mos-tecnico');
   cont.innerHTML='<div class="olt-status-msg cinza">Localizando suas OS...</div>';
   const funcId = await _mosResolverTecnico();
-  if (!funcId){ cont.innerHTML='<div class="olt-status-msg amarelo">Não achei seu cadastro de <b>funcionário</b> (Colaborador/Responsável) no IXC.'+(_mosState._erro?('<br><small>Detalhe: '+_mosState._erro+'</small>'):'')+'</div>'; if(tec) tec.textContent=''; return; }
+  if (!funcId){
+    const dbg = (_mosState._dbg||[]).map(x=>'• '+x).join('<br>');
+    cont.innerHTML='<div class="olt-status-msg amarelo">Não achei seu cadastro de <b>funcionário</b> (Colaborador/Responsável) no IXC.'
+      +(_mosState._erro?('<br><small>Erro: '+_mosState._erro+'</small>'):'')
+      +(dbg?('<div style="margin-top:8px;font-size:10px;color:var(--tx2);text-align:left;white-space:normal">'+dbg+'</div>'):'')+'</div>';
+    if(tec) tec.textContent=''; return;
+  }
   if (tec) tec.textContent = (_mosState.funcNome||('Téc. #'+funcId));
   await _mosCarregarAssuntos();
   cont.innerHTML='<div class="olt-status-msg cinza">Carregando OS...</div>';
