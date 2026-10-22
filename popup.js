@@ -1165,9 +1165,23 @@ function _mosRenderAba(aba){
       +'</div>';
   }).join('');
 }
+async function _mosReg(endpoint, id){
+  if(!id || String(id)==='0') return null;
+  try{ const r=await ixcGet(endpoint,{qtype:endpoint+'.id',query:String(id),oper:'=',page:'1',rp:'1',sortname:endpoint+'.id',sortorder:'asc'}); return (r&&r.registros&&r.registros[0])||null; }catch(e){ return null; }
+}
+const MOS_HORARIO={M:'Manhã',T:'Tarde',N:'Noite',Q:'Qualquer'};
+const MOS_CT_STATUS={P:['Pré-contrato','amarelo'],A:['Ativo','verde'],I:['Inativo','vermelho'],N:['Negativado','vermelho'],D:['Desistiu','vermelho']};
 async function _mosDetalhe(osId){
   const o = _mosState.osById && _mosState.osById[String(osId)];
   const cont=document.getElementById('mos-conteudo'); if(!cont||!o) return;
+  cont.innerHTML='<button class="btn-sm btn-gray" data-action="mos-voltar" style="margin-bottom:10px">← Voltar</button><div class="olt-status-msg cinza">Carregando dados da OS...</div>';
+  // Resolve nomes completos (cliente, login, contrato, setor) em paralelo
+  const [cli, lg, ct, se] = await Promise.all([
+    _mosReg('cliente', o.id_cliente),
+    _mosReg('radusuarios', o.id_login),
+    _mosReg('cliente_contrato', o.id_contrato_kit),
+    _mosReg('empresa_setor', o.setor)
+  ]);
   const asn=_mosState.assuntos||{};
   const assunto = asn[String(o.id_assunto)] || ('Assunto #'+o.id_assunto);
   const stB = badge(MOS_ST_LABEL[o.status]||o.status, MOS_ST_COR[o.status]||'cinza');
@@ -1175,17 +1189,25 @@ async function _mosDetalhe(osId){
   const endereco = [o.endereco,o.bairro,o.complemento].filter(Boolean).join(', ');
   const contrato = (o.id_contrato_kit && String(o.id_contrato_kit)!=='0') ? String(o.id_contrato_kit) : '';
   const latlng = (o.latitude && o.longitude && String(o.latitude)!=='0') ? (o.latitude+','+o.longitude) : '';
+  const cliNome = cli ? (cli.razao||cli.fantasia||('#'+o.id_cliente)) : (o.id_cliente?('#'+o.id_cliente):null);
+  const lgNome  = lg ? (lg.login||('#'+o.id_login)) : (o.id_login?('#'+o.id_login):null);
+  const ctDesc  = ct ? [ct.contrato, (MOS_CT_STATUS[ct.status]?badge(MOS_CT_STATUS[ct.status][0],MOS_CT_STATUS[ct.status][1]):'')].filter(Boolean).join(' ') : (contrato?('#'+contrato):null);
+  const seNome  = se ? (se.setor||null) : null;
   let h = '<button class="btn-sm btn-gray" data-action="mos-voltar" style="margin-bottom:10px">← Voltar</button>';
   h += '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px"><strong style="font-size:14px;color:var(--tx)">OS #'+o.id+(o.protocolo?' · '+o.protocolo:'')+'</strong> '+stB+' '+prB+'</div>';
   h += mrow('Assunto', assunto);
+  h += mrow('Cliente', cliNome);
+  h += mrow('Login',   lgNome);
+  h += mrow('Contrato', contrato?('#'+contrato+(ct&&ct.contrato?(' — '+ctDesc):'')) : ctDesc);
+  if (seNome) h += mrow('Setor', seNome);
+  if (_mosState.funcNome) h += mrow('Colaborador', _mosState.funcNome);
+  h += mrow('Prioridade', pr?pr[0]:o.prioridade);
+  if (o.melhor_horario_agenda) h += mrow('Melhor horário', MOS_HORARIO[o.melhor_horario_agenda]||o.melhor_horario_agenda);
   h += mrow('Aberta em', fmt(o.data_abertura));
   h += mrow('Agendada',  fmt(o.data_agenda));
   if (fmt(o.data_hora_execucao)) h += mrow('Execução',  fmt(o.data_hora_execucao));
   if (fmt(o.data_fechamento))    h += mrow('Fechada em', fmt(o.data_fechamento));
   if (endereco) h += mrow('Endereço', endereco);
-  if (contrato) h += mrow('Contrato', '#'+contrato);
-  if (o.id_cliente) h += mrow('Cliente (id)', o.id_cliente);
-  if (o.id_login)   h += mrow('Login (id)', o.id_login);
   if (o.mensagem) h += '<div style="margin-top:6px;font-size:12px"><b>Relato:</b><div style="white-space:pre-wrap;color:var(--tx2)">'+o.mensagem+'</div></div>';
   let btns='';
   if (contrato) btns += '<button class="btn-sm btn-blue" data-action="mos-entrar" data-p="'+o.id+'">📂 Entrar na OS (carregar cliente)</button>';
