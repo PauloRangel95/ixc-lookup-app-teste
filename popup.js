@@ -713,6 +713,7 @@ document.addEventListener('click', e => {
   if (action==='abrir-agendar')       abrirAgendarOS(p, p2);
   if (action==='potencia-onu')        consultarPotenciaONU(p, p2);
   if (action==='mapear-ozmap')        abrirMapaOZmap(p, p2);
+  if (action==='mos-abrir')           { const m=document.getElementById('minhas-os-modal'); if(m) m.style.display='none'; selecionarContrato(p); }
   if (action==='toggle-pppoe-pass') {
     const disp = btn.parentElement.querySelector('.pass-display');
     if (disp) {
@@ -1049,6 +1050,98 @@ async function ixcGet(endpoint, filtro) {
   if (!res.ok) throw new Error(`HTTP ${res.status} em ${endpoint}`);
   return await res.json();
 }
+
+// ═══════════════════════════════════════════════════════════════
+// Fase 0 — Minhas OS (visão do técnico, SÓ LEITURA). Ambiente de TESTE.
+// Filtra su_oss_chamado por id_tecnico (= funcionarios.id do usuário logado).
+// ═══════════════════════════════════════════════════════════════
+const MOS_STATUS = {
+  agendadas: ['A','AN','EN','AS','AG','DS','EX'], // em aberto / a fazer
+  reagendar: ['RAG'],                              // aguardando reagendamento
+  encerradas:['F']                                 // finalizadas
+};
+const MOS_ST_LABEL = {A:'Aberta',AN:'Análise',EN:'Encaminhada',AS:'Assumida',AG:'Agendada',DS:'Deslocamento',EX:'Execução',F:'Finalizada',RAG:'Aguard. reagend.'};
+const MOS_ST_COR   = {A:'azul',AN:'azul',EN:'azul',AS:'azul',AG:'amarelo',DS:'amarelo',EX:'amarelo',F:'verde',RAG:'cinza'};
+const MOS_PRIOR = {B:['Baixa','cinza'],N:['Normal','azul'],A:['Alta','amarelo'],C:['Crítica','vermelho']};
+let _mosState = { funcId:null, funcNome:null, assuntos:null, aba:'agendadas', osAll:null };
+
+async function _mosResolverTecnico(){
+  if (_mosState.funcId) return _mosState.funcId;
+  const tentativas = [];
+  if (sessaoAtual && sessaoAtual.usuario_id)    tentativas.push({ qtype:'funcionarios.usuario_id', query:String(sessaoAtual.usuario_id) });
+  if (sessaoAtual && sessaoAtual.usuario_email) tentativas.push({ qtype:'funcionarios.email',      query:String(sessaoAtual.usuario_email) });
+  for (const t of tentativas){
+    try {
+      const r = await ixcGet('funcionarios', { qtype:t.qtype, query:t.query, oper:'=', page:'1', rp:'1', sortname:'funcionarios.id', sortorder:'asc' });
+      const f = r && r.registros && r.registros[0];
+      if (f && f.id){ _mosState.funcId=String(f.id); _mosState.funcNome=f.funcionario||f.nome||null; return _mosState.funcId; }
+    } catch(e){}
+  }
+  return null;
+}
+async function _mosCarregarAssuntos(){
+  if (_mosState.assuntos) return _mosState.assuntos;
+  const map={};
+  try {
+    const r = await ixcGet('su_oss_assunto', { qtype:'su_oss_assunto.id', query:'0', oper:'>', page:'1', rp:'500', sortname:'su_oss_assunto.id', sortorder:'asc' });
+    (r && r.registros || []).forEach(a=>{ map[String(a.id)] = a.assunto || a.titulo || a.descricao || ('#'+a.id); });
+  } catch(e){}
+  _mosState.assuntos = map; return map;
+}
+async function abrirMinhasOS(){
+  const modal=document.getElementById('minhas-os-modal'); if(!modal) return;
+  modal.style.display='flex';
+  const cont=document.getElementById('mos-conteudo');
+  const tec=document.getElementById('mos-tecnico');
+  cont.innerHTML='<div class="olt-status-msg cinza">Localizando suas OS...</div>';
+  const funcId = await _mosResolverTecnico();
+  if (!funcId){ cont.innerHTML='<div class="olt-status-msg amarelo">Não achei seu cadastro de <b>funcionário</b> no IXC (pelo usuário/e-mail). Se você é técnico, confirme que seu usuário está vinculado a um funcionário.</div>'; if(tec) tec.textContent=''; return; }
+  if (tec) tec.textContent = (_mosState.funcNome||('Téc. #'+funcId));
+  await _mosCarregarAssuntos();
+  cont.innerHTML='<div class="olt-status-msg cinza">Carregando OS...</div>';
+  try {
+    const r = await ixcGet('su_oss_chamado', { qtype:'su_oss_chamado.id_tecnico', query:String(funcId), oper:'=', page:'1', rp:'300', sortname:'su_oss_chamado.id', sortorder:'desc' });
+    _mosState.osAll = (r && r.registros) || [];
+  } catch(e){ cont.innerHTML='<div class="olt-status-msg amarelo">Erro ao carregar OS: '+(e.message||'')+'</div>'; return; }
+  _mosRenderAba(_mosState.aba);
+}
+function _mosRenderAba(aba){
+  _mosState.aba=aba;
+  document.querySelectorAll('#minhas-os-modal .gestao-tab').forEach(b=>b.classList.toggle('ativa', b.dataset.mostab===aba));
+  const cont=document.getElementById('mos-conteudo'); if(!cont) return;
+  const alvo = MOS_STATUS[aba]||[];
+  const lista = (_mosState.osAll||[]).filter(o => alvo.includes(String(o.status)));
+  if (!lista.length){ cont.innerHTML='<div class="empty">Nenhuma OS nesta aba.</div>'; return; }
+  const asn=_mosState.assuntos||{};
+  cont.innerHTML = lista.map(o=>{
+    const assunto = asn[String(o.id_assunto)] || ('Assunto #'+o.id_assunto);
+    const endereco = [o.endereco, o.bairro].filter(Boolean).join(' · ');
+    const data = fmt(o.data_agenda) || fmt(o.data_abertura) || '';
+    const pr = MOS_PRIOR[o.prioridade];
+    const prB = pr ? badge(pr[0], pr[1]) : '';
+    const stB = badge(MOS_ST_LABEL[o.status]||o.status, MOS_ST_COR[o.status]||'cinza');
+    const msg = (o.mensagem||'').trim();
+    const msgCut = msg.slice(0,180);
+    const contrato = (o.id_contrato_kit && String(o.id_contrato_kit)!=='0') ? String(o.id_contrato_kit) : '';
+    return '<div style="background:var(--bg);border:1px solid var(--b);border-radius:8px;padding:10px;margin-bottom:8px">'
+      +'<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap">'
+      +'<strong style="font-size:13px;color:var(--tx)">OS #'+o.id+(o.protocolo?' · '+o.protocolo:'')+'</strong> '+stB+' '+prB
+      +(data?'<span style="margin-left:auto;font-size:11px;color:var(--tx2)">📅 '+data+'</span>':'')+'</div>'
+      +'<div style="font-size:12px;color:var(--tx);margin-bottom:3px">'+assunto+'</div>'
+      +(endereco?'<div style="font-size:11px;color:var(--tx2)">📍 '+endereco+(o.complemento?(' — '+o.complemento):'')+'</div>':'')
+      +(msgCut?'<div style="font-size:11px;color:var(--tx2);margin-top:4px;white-space:pre-wrap">'+msgCut+(msg.length>180?'…':'')+'</div>':'')
+      +(contrato?'<div class="btns" style="margin-top:6px"><button class="btn-sm btn-blue" data-action="mos-abrir" data-p="'+contrato+'">Abrir contrato #'+contrato+'</button></div>':'')
+      +'</div>';
+  }).join('');
+}
+// Wiring (os elementos já existem no index.html)
+(function(){
+  const b=document.getElementById('btn-minhas-os'); if(b) b.addEventListener('click', abrirMinhasOS);
+  const f=document.getElementById('mos-fechar');    if(f) f.addEventListener('click', ()=>{ const m=document.getElementById('minhas-os-modal'); if(m) m.style.display='none'; });
+  const a=document.getElementById('mos-atualizar');  if(a) a.addEventListener('click', ()=>{ _mosState.osAll=null; abrirMinhasOS(); });
+  document.querySelectorAll('#minhas-os-modal .gestao-tab').forEach(t=> t.addEventListener('click', ()=> _mosRenderAba(t.dataset.mostab)));
+  const modal=document.getElementById('minhas-os-modal'); if(modal) modal.addEventListener('click', e=>{ if(e.target===modal) modal.style.display='none'; });
+})();
 
 window.abrirLink = url => {
   if (typeof chrome!=='undefined'&&chrome.tabs) chrome.tabs.create({url});
