@@ -202,8 +202,8 @@ async function mostrarApp(sessao) {
   carregarHistoricoConsultas().then(renderHistorico);
   setState('idle');
   elInput.focus();
-  // Técnico (grupo 4 = Suporte de Campo): tela inicial = Minhas OS
-  if (String(sessao.id_grupo) === '4') { setTimeout(()=>{ try{ abrirMinhasOS(); }catch(e){} }, 250); }
+  // Técnico: tela inicial = Minhas OS. (id_grupo às vezes não vem no login → também abre se resolver o funcionário.)
+  setTimeout(async()=>{ try{ if (String(sessao.id_grupo)==='4'){ abrirMinhasOS(); return; } const f=await _mosResolverTecnico(); if (f) abrirMinhasOS(); }catch(e){} }, 300);
 }
 
 function setState(s) {
@@ -1243,14 +1243,41 @@ function _mosRenderContexto(o){
     +'<button class="btn-sm btn-blue" data-action="mos-detalhe-modal" data-p="'+o.id+'" style="margin-left:auto" title="Detalhe e ações da OS">📋 OS / Ações</button>'
     +'</div>';
 }
-function _mosEntrarOS(osId){
+async function _mosEntrarOS(osId){
   const o=_mosState.osById && _mosState.osById[String(osId)]; if(!o) return;
   _mosState.osAtiva=o;
   const m=document.getElementById('minhas-os-modal'); if(m) m.style.display='none';
   _mosRenderContexto(o);
   const contrato=(o.id_contrato_kit && String(o.id_contrato_kit)!=='0')?String(o.id_contrato_kit):'';
-  if (contrato) selecionarContrato(contrato);
-  else { setState('idle'); toast('OS sem contrato vinculado','err'); }
+  if(!contrato){ setState('idle'); toast('OS sem contrato vinculado','err'); return; }
+  try { elInput.value=contrato; setState('loading'); await buscarContrato(contrato); }
+  catch(e){ setState('error'); if(elErrMsg) elErrMsg.textContent='Falha ao carregar o cliente da OS.'; return; }
+  _mosPrependOSCard(o);   // cola o resumo da OS no topo do dossiê
+}
+function _mosPrependOSCard(o){
+  const el=document.getElementById('results'); if(!el) return;
+  const old=document.getElementById('os-card-topo'); if(old) old.remove();
+  const asn=_mosState.assuntos||{}; const assunto=asn[String(o.id_assunto)]||('Assunto #'+o.id_assunto);
+  const stB=badge(MOS_ST_LABEL[o.status]||o.status, MOS_ST_COR[o.status]||'cinza');
+  const pr=MOS_PRIOR[o.prioridade]; const prB=pr?badge(pr[0],pr[1]):'';
+  const endereco=[o.endereco,o.bairro,o.complemento].filter(Boolean).join(', ');
+  const ag=fmt(o.data_agenda); const hor=o.melhor_horario_agenda?(MOS_HORARIO[o.melhor_horario_agenda]||o.melhor_horario_agenda):'';
+  const latlng=(o.latitude && o.longitude && String(o.latitude)!=='0')?(o.latitude+','+o.longitude):'';
+  let body=mrow('Assunto',assunto)+mrow('Status',MOS_ST_LABEL[o.status]||o.status);
+  if(ag) body+=mrow('Agendada',ag);
+  if(hor) body+=mrow('Melhor horário',hor);
+  if(endereco) body+=mrow('Endereço',endereco);
+  if(o.mensagem) body+='<div style="margin-top:4px;font-size:12px"><b>Relato:</b> <span style="color:var(--tx2);white-space:pre-wrap">'+o.mensagem+'</span></div>';
+  let topBtns='';
+  if(latlng) topBtns+='<button class="btn-sm btn-gray" data-action="link" data-p="https://www.google.com/maps?q='+latlng+'">📍 Mapa</button>';
+  topBtns+='<button class="btn-sm btn-gray" data-action="mos-voltar-lista">← Minhas OS</button>';
+  body+='<div class="btns" style="margin-top:8px">'+topBtns+'</div>';
+  body+='<div style="margin-top:8px;padding:6px 8px;border:1px dashed var(--b2);border-radius:6px;font-size:11px;color:var(--tx2)">⚙ Ações (assumir · deslocamento · executar · finalizar · reagendar) — <b>em breve</b> (fase de escrita)</div>';
+  const html='<div id="os-card-topo" style="background:var(--bg2);border:1px solid var(--y3);border-radius:10px;padding:12px;margin-bottom:10px">'
+    +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px"><strong style="font-family:var(--font-head);color:var(--acc);font-size:14px">🧰 OS #'+o.id+(o.protocolo?' · '+o.protocolo:'')+'</strong> '+stB+' '+prB+'</div>'
+    +body+'</div>';
+  const wrap=document.createElement('div'); wrap.innerHTML=html;
+  el.insertBefore(wrap.firstElementChild, el.firstChild);
 }
 // Wiring (os elementos já existem no index.html)
 (function(){
