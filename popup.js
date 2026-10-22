@@ -1135,6 +1135,15 @@ async function abrirMinhasOS(){
     _mosState.osAll = (r && r.registros) || [];
     _mosState.osById = {}; _mosState.osAll.forEach(o=>{ _mosState.osById[String(o.id)]=o; });
   } catch(e){ cont.innerHTML='<div class="olt-status-msg amarelo">Erro ao carregar OS: '+(e.message||'')+'</div>'; return; }
+  // Nomes dos clientes em lote (IN) p/ mostrar na lista
+  try {
+    const ids=[...new Set((_mosState.osAll||[]).map(o=>String(o.id_cliente)).filter(x=>x&&x!=='0'))];
+    _mosState.clienteMap={};
+    if (ids.length){
+      const rc=await ixcGet('cliente',{qtype:'cliente.id',query:ids.join(','),oper:'IN',page:'1',rp:'500',sortname:'cliente.id',sortorder:'asc'});
+      (rc&&rc.registros||[]).forEach(c=>{ _mosState.clienteMap[String(c.id)]=c.razao||c.fantasia||('#'+c.id); });
+    }
+  } catch(e){ _mosState.clienteMap=_mosState.clienteMap||{}; }
   _mosRenderAba(_mosState.aba);
 }
 function _mosRenderAba(aba){
@@ -1155,11 +1164,13 @@ function _mosRenderAba(aba){
     const msg = (o.mensagem||'').trim();
     const msgCut = msg.slice(0,180);
     const contrato = (o.id_contrato_kit && String(o.id_contrato_kit)!=='0') ? String(o.id_contrato_kit) : '';
+    const cliNome=(_mosState.clienteMap && _mosState.clienteMap[String(o.id_cliente)]) || (o.id_cliente?('Cliente #'+o.id_cliente):'');
     return '<div data-action="mos-entrar" data-p="'+o.id+'" style="background:var(--bg);border:1px solid var(--b);border-radius:8px;padding:10px;margin-bottom:8px;cursor:pointer" title="Abrir OS (carrega o cliente completo)">'
       +'<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap">'
-      +'<strong style="font-size:13px;color:var(--tx)">OS #'+o.id+(o.protocolo?' · '+o.protocolo:'')+'</strong> '+stB+' '+prB
+      +'<strong style="font-size:13px;color:var(--tx)">OS #'+o.id+'</strong> '+stB+' '+prB
       +(data?'<span style="margin-left:auto;font-size:11px;color:var(--tx2)">📅 '+data+'</span>':'')+'</div>'
-      +'<div style="font-size:12px;color:var(--tx);margin-bottom:3px">'+assunto+'</div>'
+      +(cliNome?'<div style="font-size:13px;color:var(--tx);font-weight:700;margin-bottom:2px">👤 '+cliNome+'</div>':'')
+      +'<div style="font-size:12px;color:var(--acc);margin-bottom:3px">🏷 '+assunto+'</div>'
       +(endereco?'<div style="font-size:11px;color:var(--tx2)">📍 '+endereco+(o.complemento?(' — '+o.complemento):'')+'</div>':'')
       +(msgCut?'<div style="font-size:11px;color:var(--tx2);margin-top:4px;white-space:pre-wrap">'+msgCut+(msg.length>180?'…':'')+'</div>':'')
       +'<div class="btns" style="margin-top:6px">'
