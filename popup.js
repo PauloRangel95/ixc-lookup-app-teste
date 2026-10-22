@@ -725,6 +725,8 @@ document.addEventListener('click', e => {
   if (action==='mos-voltar-lista')    abrirMinhasOS();
   if (action==='os-mensagem')         _osRegistrarMensagem(p);
   if (action==='os-reagendar')        _osReagendar(p);
+  if (action==='os-executar')         _osExecutar(p);
+  if (action==='os-finalizar')        _osFinalizar(p);
   if (action==='mos-detalhe-modal')   { const v=document.getElementById('minhas-os-view'); const c=document.getElementById('os-contexto'); if(c)c.style.display='none'; setState('none'); if(v)v.style.display=''; _mosDetalhe(p); }
   if (action==='toggle-pppoe-pass') {
     const disp = btn.parentElement.querySelector('.pass-display');
@@ -1292,10 +1294,13 @@ function _mosPrependOSCard(o){
   body+='<div class="btns" style="margin-top:8px">'+topBtns+'</div>';
   body+='<div style="margin-top:8px"><div style="font-size:11px;color:var(--tx2);margin-bottom:4px">Ações da OS (teste):</div>'
     +'<div class="btns">'
-    +'<button class="btn-sm btn-blue" data-action="os-mensagem" data-p="'+o.id+'">➕ Registrar mensagem</button>'
-    +'<button class="btn-sm btn-yellow" data-action="os-reagendar" data-p="'+o.id+'">🕐 Marcar p/ agendamento</button>'
+    +'<button class="btn-sm btn-green" data-action="os-executar" data-p="'+o.id+'">▶ Executar</button>'
+    +'<button class="btn-sm btn-blue" data-action="os-finalizar" data-p="'+o.id+'">✅ Finalizar</button>'
     +'</div>'
-    +'<div style="font-size:10px;color:var(--tx2);margin-top:6px">🚧 Executar · Finalizar — em breve</div></div>';
+    +'<div class="btns" style="margin-top:4px">'
+    +'<button class="btn-sm btn-gray" data-action="os-mensagem" data-p="'+o.id+'">➕ Mensagem</button>'
+    +'<button class="btn-sm btn-yellow" data-action="os-reagendar" data-p="'+o.id+'">🕐 P/ agendamento</button>'
+    +'</div></div>';
   const html='<div id="os-card-topo" style="background:var(--bg2);border:1px solid var(--y3);border-radius:10px;padding:12px;margin-bottom:10px">'
     +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px"><strong style="font-family:var(--font-head);color:var(--acc);font-size:14px">🧰 OS #'+o.id+(o.protocolo?' · '+o.protocolo:'')+'</strong> '+stB+' '+prB+'</div>'
     +body+'</div>';
@@ -1329,6 +1334,26 @@ async function _osReagendar(idChamado){
     if (ok){ toast('OS marcada para agendamento ✓','ok'); _mosState.osAll=null; setTimeout(abrirMinhasOS, 700); }
     else toast('Falha: '+((r&&r.erro)||(r&&r.resposta&&r.resposta.message)||'erro'),'err');
   } catch(e){ toast('Erro: '+(e.message||''),'err'); }
+}
+async function _osAcaoSimples(idChamado, acao, mensagem, okMsg){
+  try {
+    const r = await fetch(WEBHOOK_OS_ACAO, { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ acao, id_chamado:String(idChamado), mensagem, id_tecnico:(_mosState.funcId||'') }) }).then(x=>x.json());
+    const ok = r && r.ok && r.resposta && (r.resposta.type==='success' || r.resposta.id);
+    if (ok){ toast(okMsg,'ok'); _mosState.osAll=null; setTimeout(abrirMinhasOS, 700); }
+    else toast('Falha: '+((r&&r.erro)||(r&&r.resposta&&r.resposta.message)||'erro'),'err');
+  } catch(e){ toast('Erro: '+(e.message||''),'err'); }
+}
+async function _osExecutar(idChamado){
+  if(!confirm('Iniciar EXECUÇÃO da OS #'+idChamado+'?')) return;
+  const obs = (prompt('Observação (opcional):')||'').trim();
+  _osAcaoSimples(idChamado, 'executar', obs || 'Em execução.', 'OS em execução ✓');
+}
+async function _osFinalizar(idChamado){
+  if(!confirm('FINALIZAR a OS #'+idChamado+'?\n\nIsso encerra a OS no IXC.')) return;
+  const relato = (prompt('Relato de encerramento (obrigatório):')||'').trim();
+  if(!relato){ toast('Relato é obrigatório para finalizar','err'); return; }
+  _osAcaoSimples(idChamado, 'finalizar', relato, 'OS finalizada ✓');
 }
 // Wiring (os elementos já existem no index.html)
 (function(){

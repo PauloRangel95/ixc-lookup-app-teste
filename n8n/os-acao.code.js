@@ -66,6 +66,23 @@ try {
     const r = await ixcWrite.call(this, 'su_oss_chamado_reagendar', payload);
     return [{ json:{ ok:true, acao, id_chamado:idChamado, resposta:r } }];
   }
+  // EXECUTAR (técnico começou/chegou) → status EX
+  if (acao === 'executar'){
+    const payload = { id_chamado:idChamado, status:'EX', id_evento:'9',
+      mensagem: String(body.mensagem || 'Em execução.'), id_tecnico: String(body.id_tecnico||''), data: brDate() };
+    const r = await ixcWrite.call(this, 'su_oss_chamado_executar', payload);
+    return [{ json:{ ok:true, acao, id_chamado:idChamado, resposta:r } }];
+  }
+  // FINALIZAR → status F (exige data_inicio e data_final)
+  if (acao === 'finalizar'){
+    const now = brDate();
+    const payload = { id_chamado:idChamado, status:'F', id_evento:'6',
+      mensagem: String(body.mensagem || 'Finalizada.'), id_tecnico: String(body.id_tecnico||''),
+      data: now, data_inicio: now, data_final: now };
+    if (body.id_resposta) payload.id_resposta = String(body.id_resposta);
+    const r = await ixcWrite.call(this, 'su_oss_chamado_fechar', payload);
+    return [{ json:{ ok:true, acao, id_chamado:idChamado, resposta:r } }];
+  }
   return [{ json:{ ok:false, erro:'ação não suportada: '+acao } }];
 } catch(e){
   return [{ json:{ ok:false, erro: errInfo(e) } }];
