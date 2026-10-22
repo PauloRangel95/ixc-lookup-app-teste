@@ -1293,15 +1293,18 @@ function _mosPrependOSCard(o){
   if(latlng) topBtns+='<button class="btn-sm btn-gray" data-action="link" data-p="https://www.google.com/maps?q='+latlng+'">📍 Mapa</button>';
   topBtns+='<button class="btn-sm btn-gray" data-action="mos-voltar-lista">← Minhas OS</button>';
   body+='<div class="btns" style="margin-top:8px">'+topBtns+'</div>';
-  body+='<div style="margin-top:8px"><div style="font-size:11px;color:var(--tx2);margin-bottom:4px">Ações da OS (teste):</div>'
-    +'<div class="btns">'
-    +'<button class="btn-sm btn-blue" data-action="os-deslocamento" data-p="'+o.id+'">🚚 Deslocamento</button>'
-    +'<button class="btn-sm btn-green" data-action="os-executar" data-p="'+o.id+'">▶ Executar</button>'
-    +'</div>'
-    +'<div class="btns" style="margin-top:4px">'
-    +'<button class="btn-sm btn-blue" data-action="os-finalizar" data-p="'+o.id+'">✅ Encerrar OS</button>'
-    +'<button class="btn-sm btn-yellow" data-action="os-reagendar" data-p="'+o.id+'">🕐 P/ agendamento</button>'
-    +'</div></div>';
+  // Ações SEQUENCIAIS por status: só a próxima ação válida aparece.
+  var st=String(o.status||'');
+  var prox='';
+  if (['A','AN','EN','AS','AG'].indexOf(st)>=0) prox='<button class="btn-sm btn-blue" data-action="os-deslocamento" data-p="'+o.id+'">🚚 Iniciar deslocamento</button>';
+  else if (st==='DS') prox='<button class="btn-sm btn-green" data-action="os-executar" data-p="'+o.id+'">▶ Executar (cheguei)</button>';
+  else if (st==='EX') prox='<button class="btn-sm btn-blue" data-action="os-finalizar" data-p="'+o.id+'">✅ Encerrar OS</button>';
+  var reag = (['F','RAG'].indexOf(st)<0) ? '<button class="btn-sm btn-yellow" data-action="os-reagendar" data-p="'+o.id+'">🕐 P/ agendamento</button>' : '';
+  var inner = (st==='F') ? '<span style="font-size:12px;color:var(--g)">✅ OS finalizada</span>'
+            : (st==='RAG') ? '<span style="font-size:12px;color:var(--tx2)">🔒 aguardando reagendamento</span>'
+            : (prox+reag);
+  body+='<div style="margin-top:8px"><div style="font-size:11px;color:var(--tx2);margin-bottom:4px">Ação da OS ('+(MOS_ST_LABEL[st]||st)+'):</div>'
+    +'<div class="btns">'+inner+'</div></div>';
   const html='<div id="os-card-topo" style="background:var(--bg2);border:1px solid var(--y3);border-radius:10px;padding:12px;margin-bottom:10px">'
     +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px"><strong style="font-family:var(--font-head);color:var(--acc);font-size:14px">🧰 OS #'+o.id+(o.protocolo?' · '+o.protocolo:'')+'</strong> '+stB+' '+prB+'</div>'
     +body+'</div>';
