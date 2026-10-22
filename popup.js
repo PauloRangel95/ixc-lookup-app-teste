@@ -1067,15 +1067,26 @@ let _mosState = { funcId:null, funcNome:null, assuntos:null, aba:'agendadas', os
 
 async function _mosResolverTecnico(){
   if (_mosState.funcId) return _mosState.funcId;
-  const tentativas = [];
-  if (sessaoAtual && sessaoAtual.usuario_id)    tentativas.push({ qtype:'funcionarios.usuario_id', query:String(sessaoAtual.usuario_id) });
-  if (sessaoAtual && sessaoAtual.usuario_email) tentativas.push({ qtype:'funcionarios.email',      query:String(sessaoAtual.usuario_email) });
-  for (const t of tentativas){
+  _mosState._erro = null;
+  const uid = sessaoAtual && sessaoAtual.usuario_id;
+  // 1) vínculo oficial: usuarios.funcionario ("Colaborador/Responsável")
+  if (uid){
+    try {
+      const r = await ixcGet('usuarios', { qtype:'usuarios.id', query:String(uid), oper:'=', page:'1', rp:'1', sortname:'usuarios.id', sortorder:'asc' });
+      const u = r && r.registros && r.registros[0];
+      if (u && u.funcionario && String(u.funcionario)!=='0'){ _mosState.funcId=String(u.funcionario); _mosState.funcNome=u.nome||null; return _mosState.funcId; }
+    } catch(e){ _mosState._erro = 'usuarios: '+(e.message||e); }
+  }
+  // 2/3) fallbacks pelo lado de funcionarios
+  const tent = [];
+  if (uid)                                     tent.push({ qtype:'funcionarios.usuario_id', query:String(uid) });
+  if (sessaoAtual && sessaoAtual.usuario_email) tent.push({ qtype:'funcionarios.email',      query:String(sessaoAtual.usuario_email) });
+  for (const t of tent){
     try {
       const r = await ixcGet('funcionarios', { qtype:t.qtype, query:t.query, oper:'=', page:'1', rp:'1', sortname:'funcionarios.id', sortorder:'asc' });
       const f = r && r.registros && r.registros[0];
       if (f && f.id){ _mosState.funcId=String(f.id); _mosState.funcNome=f.funcionario||f.nome||null; return _mosState.funcId; }
-    } catch(e){}
+    } catch(e){ _mosState._erro = 'funcionarios: '+(e.message||e); }
   }
   return null;
 }
@@ -1095,7 +1106,7 @@ async function abrirMinhasOS(){
   const tec=document.getElementById('mos-tecnico');
   cont.innerHTML='<div class="olt-status-msg cinza">Localizando suas OS...</div>';
   const funcId = await _mosResolverTecnico();
-  if (!funcId){ cont.innerHTML='<div class="olt-status-msg amarelo">Não achei seu cadastro de <b>funcionário</b> no IXC (pelo usuário/e-mail). Se você é técnico, confirme que seu usuário está vinculado a um funcionário.</div>'; if(tec) tec.textContent=''; return; }
+  if (!funcId){ cont.innerHTML='<div class="olt-status-msg amarelo">Não achei seu cadastro de <b>funcionário</b> (Colaborador/Responsável) no IXC.'+(_mosState._erro?('<br><small>Detalhe: '+_mosState._erro+'</small>'):'')+'</div>'; if(tec) tec.textContent=''; return; }
   if (tec) tec.textContent = (_mosState.funcNome||('Téc. #'+funcId));
   await _mosCarregarAssuntos();
   cont.innerHTML='<div class="olt-status-msg cinza">Carregando OS...</div>';
