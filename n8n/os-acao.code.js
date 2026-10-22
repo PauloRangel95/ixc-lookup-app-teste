@@ -3,8 +3,17 @@
 // Trava: nesta fase só aceita a OS de teste.
 // Entrada: { acao:'mensagem', id_chamado, mensagem, id_tecnico }
 const IXC_BASE  = 'https://ixc.carajasnet.com/webservice/v1';
-const IXC_TOKEN = 'COLE_O_TOKEN_BASIC_DO_IXC'; // mesmo Basic auth dos fluxos de produção (usuário com ESCRITA)
+// Cole o MESMO auth do IXC que a produção usa. Aceita 2 formatos:
+//  - o blob base64 que vem depois de "Basic " no header Authorization da produção; OU
+//  - "usuario:token" (que o código codifica em base64 sozinho).
+const IXC_AUTH  = 'COLE_BASE64_OU_usuario:token';
 const SOMENTE_OS_TESTE = '1167568';            // '' = libera geral (só depois de validado)
+
+function authHeader(){
+  let v = String(IXC_AUTH).replace(/^Basic\s+/i,'').trim();
+  if (v.includes(':')) v = Buffer.from(v, 'utf8').toString('base64'); // "usuario:token" -> base64
+  return 'Basic ' + v;
+}
 
 const body = $input.first().json.body || $input.first().json;
 const acao = String(body.acao || '').trim();
@@ -17,7 +26,7 @@ function nowIX(){ const d=new Date(), p=n=>String(n).padStart(2,'0');
   return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds()); }
 async function ixcWrite(endpoint, payload){
   return await this.helpers.httpRequest({ method:'POST', url:`${IXC_BASE}/${endpoint}`,
-    headers:{ 'Authorization':'Basic '+IXC_TOKEN, 'Content-Type':'application/json' }, body: payload, json:true });
+    headers:{ 'Authorization':authHeader(), 'Content-Type':'application/json' }, body: payload, json:true });
 }
 function errInfo(e){ const c=e.httpCode||e.statusCode||(e.response&&e.response.statusCode)||''; let d='';
   try{ const b=e.response&&e.response.body; if(b) d=typeof b==='string'?b:JSON.stringify(b); }catch(_){}
