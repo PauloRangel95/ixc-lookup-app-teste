@@ -1300,13 +1300,17 @@ function _mosPrependOSCard(o){
 }
 // ESCRITA de OS (fase teste) — registrar mensagem. Vai pro n8n de TESTE, travado na OS de teste.
 async function _osRegistrarMensagem(idChamado){
+  const o = _mosState.osById && _mosState.osById[String(idChamado)];
+  const status = (o && o.status) || 'AG';                 // mantém o status atual da OS
   const msg = prompt('Mensagem para registrar na OS #'+idChamado+':');
   if (!msg || !msg.trim()) return;
   try {
     const r = await fetch(WEBHOOK_OS_ACAO, { method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ acao:'mensagem', id_chamado:String(idChamado), mensagem:msg.trim(), id_tecnico:(_mosState.funcId||'') }) }).then(x=>x.json());
-    if (r && r.ok) toast('Mensagem registrada na OS ✓','ok');
-    else toast('Falha: '+((r&&r.erro)||'erro'),'err');
+      body: JSON.stringify({ acao:'mensagem', id_chamado:String(idChamado), mensagem:msg.trim(), id_tecnico:(_mosState.funcId||''),
+        id_evento:'17', status:status, tipo_cobranca:'NENHUM' }) }).then(x=>x.json());  // 17 = REGISTRO DE INFORMAÇÃO
+    const ok = r && r.ok && r.resposta && (r.resposta.type==='success' || r.resposta.id);
+    if (ok) toast('Mensagem registrada na OS ✓','ok');
+    else toast('Falha: '+((r&&r.erro)||(r&&r.resposta&&r.resposta.message)||'erro'),'err');
   } catch(e){ toast('Erro ao registrar: '+(e.message||''),'err'); }
 }
 // Wiring (os elementos já existem no index.html)
