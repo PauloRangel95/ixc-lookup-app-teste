@@ -1356,15 +1356,48 @@ async function _osExecutar(idChamado){
 }
 // Dados coletados no encerramento (persistem entre as telas)
 let _encDados = {};
+let _encDiag = null; // cache de su_diagnostico (ativos)
+async function _encCarregarDiag(){
+  if (_encDiag) return _encDiag;
+  try {
+    const r = await ixcGet('su_diagnostico', { qtype:'su_diagnostico.ativo', query:'S', oper:'=', page:'1', rp:'1000', sortname:'su_diagnostico.descricao', sortorder:'asc' });
+    _encDiag = (r && r.registros) || [];
+  } catch(e){ _encDiag = []; }
+  return _encDiag;
+}
+function _encDiagWire(ov){
+  const inp=ov.querySelector('#enc-diag-busca'), lista=ov.querySelector('#enc-diag-lista');
+  if(!inp||!lista) return;
+  const pinta=(term)=>{
+    term=(term||'').trim().toUpperCase();
+    if(!_encDiag){ lista.innerHTML='<div class="olt-status-msg cinza">Carregando diagnósticos...</div>'; return; }
+    let arr=_encDiag;
+    if(term) arr=arr.filter(d=>String(d.descricao||'').toUpperCase().indexOf(term)>=0);
+    arr=arr.slice(0,60);
+    if(!arr.length){ lista.innerHTML='<div class="empty">Nada encontrado.</div>'; return; }
+    lista.innerHTML=arr.map(d=>{
+      const sel=String(_encDados.id_su_diagnostico||'')===String(d.id);
+      return '<div data-diag="'+d.id+'" data-desc="'+String(d.descricao||'').replace(/"/g,'&quot;')+'" style="padding:6px 8px;border-radius:6px;cursor:pointer;font-size:12px;margin-bottom:3px;border:1px solid '+(sel?'var(--acc)':'var(--b)')+';background:'+(sel?'rgba(0,180,255,.12)':'var(--bg)')+';color:var(--tx)">'+(sel?'✓ ':'')+d.descricao+'</div>';
+    }).join('');
+  };
+  inp.oninput=()=>pinta(inp.value);
+  lista.onclick=(e)=>{ const row=e.target.closest('[data-diag]'); if(!row) return; _encDados.id_su_diagnostico=row.getAttribute('data-diag'); _encDados.diag_desc=row.getAttribute('data-desc'); pinta(inp.value); };
+  if(!_encDiag){ _encCarregarDiag().then(()=>pinta(inp.value)); } else pinta('');
+}
 function _osAbrirEncerramento(idChamado){
   const o = _mosState.osById && _mosState.osById[String(idChamado)];
   const nome = o ? ((_mosState.clienteMap && _mosState.clienteMap[String(o.id_cliente)])||'') : '';
   _encDados = { id_chamado:String(idChamado), relato:'' };
+  _encCarregarDiag(); // pré-carrega diagnósticos em background
   // Telas do encerramento (tela a tela). 'render' devolve o HTML do conteúdo.
   const emConstr = (txt)=>'<div style="padding:20px 8px;text-align:center;color:var(--tx2);font-size:12px">🚧 '+txt+'<br><small>em construção</small></div>';
   const passos = [
     { ic:'📝', titulo:'Relato', render:()=>'<label style="font-size:12px;color:var(--tx);font-weight:600">Relato do técnico *</label>'
         +'<textarea id="enc-relato" rows="4" style="width:100%;margin-top:6px;padding:8px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx);font-family:inherit" placeholder="O que foi feito no atendimento...">'+(_encDados.relato||'')+'</textarea>' },
+    { ic:'🩺', titulo:'Diagnóstico', render:()=>(
+        _encDados.diag_desc?'<div style="font-size:12px;color:var(--g);margin-bottom:6px">Selecionado: <strong>'+_encDados.diag_desc+'</strong></div>':'<div style="font-size:11px;color:var(--tx2);margin-bottom:6px">Busque e selecione o diagnóstico do atendimento.</div>')
+        +'<input id="enc-diag-busca" placeholder="🔎 buscar diagnóstico..." style="width:100%;padding:7px 8px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx);margin-bottom:6px"><div id="enc-diag-lista" style="max-height:200px;overflow-y:auto"></div>',
+      after:(ov)=>_encDiagWire(ov) },
     { ic:'📡', titulo:'Autorizar ONU',        render:()=>emConstr('Autorizar ONU (IXC→OLT)') },
     { ic:'⚙️', titulo:'Configurar Dispositivo', render:()=>emConstr('Configurar Dispositivo (PPPoE)') },
     { ic:'📦', titulo:'Produtos / materiais',  render:()=>emConstr('Produtos / materiais') },
@@ -1372,6 +1405,7 @@ function _osAbrirEncerramento(idChamado){
     { ic:'✍️', titulo:'Assinatura',            render:()=>emConstr('Assinatura do cliente') },
     { ic:'✅', titulo:'Resumo',                render:()=>'<div style="font-size:12px;color:var(--tx);line-height:1.9">'
         +'Cliente: <strong>'+(nome||'—')+'</strong><br>'
+        +'Diagnóstico: <strong>'+(_encDados.diag_desc||'—')+'</strong><br>'
         +'Relato: <strong>'+((_encDados.relato||'').trim()||'<span style="color:var(--r)">não preenchido</span>')+'</strong><br>'
         +'<span style="color:var(--tx2);font-size:11px">Ao encerrar, a OS vai para status Finalizada no IXC.</span></div>' }
   ];
@@ -1397,6 +1431,7 @@ function _osAbrirEncerramento(idChamado){
     ov.querySelector('#enc-steps').innerHTML = passos.map((p,i)=>'<span title="'+p.titulo+'" style="font-size:14px;opacity:'+(i===idx?'1':(i<idx?'.6':'.3'))+'">'+p.ic+'</span>').join('<span style="color:var(--tx3)">·</span>');
     ov.querySelector('#enc-titulo').textContent = passos[idx].ic+' '+passos[idx].titulo+'  ('+(idx+1)+'/'+passos.length+')';
     ov.querySelector('#enc-conteudo').innerHTML = passos[idx].render();
+    if (passos[idx].after) { try{ passos[idx].after(ov); }catch(e){} }
     ov.querySelector('#enc-ant').style.visibility = idx===0?'hidden':'visible';
     const ultimo = idx===passos.length-1;
     ov.querySelector('#enc-prox').style.display = ultimo?'none':'';
@@ -1414,7 +1449,7 @@ function _osAbrirEncerramento(idChamado){
     if(!confirm('Encerrar a OS #'+idChamado+' no IXC?')) return;
     const btn=this; btn.disabled=true; btn.textContent='⏳...';
     try {
-      const r=await fetch(WEBHOOK_OS_ACAO,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({acao:'finalizar',id_chamado:String(idChamado),mensagem:_encDados.relato.trim(),id_tecnico:(_mosState.funcId||'')})}).then(x=>x.json());
+      const r=await fetch(WEBHOOK_OS_ACAO,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({acao:'finalizar',id_chamado:String(idChamado),mensagem:_encDados.relato.trim(),id_tecnico:(_mosState.funcId||''),id_su_diagnostico:(_encDados.id_su_diagnostico||'')})}).then(x=>x.json());
       const ok=r&&r.ok&&r.resposta&&(r.resposta.type==='success'||r.resposta.id);
       if(ok){ toast('OS encerrada ✓','ok'); fechar(); _mosState.osAll=null; setTimeout(abrirMinhasOS,700); }
       else { msg.style.color='var(--r)'; msg.textContent='Falha: '+((r&&r.erro)||(r&&r.resposta&&r.resposta.message)||'erro'); btn.disabled=false; btn.textContent='✅ Encerrar OS'; }

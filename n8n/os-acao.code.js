@@ -93,6 +93,7 @@ try {
       mensagem: String(body.mensagem || 'Finalizada.'), id_tecnico: String(body.id_tecnico||''),
       data: now, data_inicio: now, data_final: now };
     if (body.id_resposta) payload.id_resposta = String(body.id_resposta);
+    if (body.id_su_diagnostico) payload.id_su_diagnostico = String(body.id_su_diagnostico);
     const r = await ixcWrite.call(this, 'su_oss_chamado_fechar', payload);
     return [{ json:{ ok:true, acao, id_chamado:idChamado, resposta:r } }];
   }
