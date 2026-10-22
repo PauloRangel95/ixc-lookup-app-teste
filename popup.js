@@ -2514,8 +2514,24 @@ function renderOZmapHTML(d) {
   if (btns) h += `<div class="btns">${btns}</div>`;
   return h;
 }
+function _mosRenderPendencias(unmapped){
+  const el=document.getElementById('results'); if(!el) return;
+  const old=document.getElementById('pend-banner'); if(old) old.remove();
+  if(!unmapped || !unmapped.length) return;
+  const botoes = unmapped.map(l=>'<button class="btn-sm btn-blue" data-action="mapear-ozmap" data-p="'+String(l.id)+'" data-p2="'+(l.login||'').replace(/"/g,'&quot;')+'">🗺️ Mapear '+(l.login||('#'+l.id))+'</button>').join(' ');
+  const div=document.createElement('div');
+  div.id='pend-banner';
+  div.style.cssText='background:rgba(245,158,11,.14);border:1px solid var(--y3);border-left:4px solid var(--y);border-radius:8px;padding:10px 12px;margin-bottom:10px';
+  div.innerHTML='<div style="font-size:13px;font-weight:700;color:var(--y);margin-bottom:4px">⚠ Cliente sem OZmap</div>'
+    +'<div style="font-size:11px;color:var(--tx2);margin-bottom:6px">Login não mapeado na rede (OZmap). Mapear agora pra não deixar pendência:</div>'
+    +'<div class="btns">'+botoes+'</div>';
+  const osCard=document.getElementById('os-card-topo');
+  if (osCard) el.insertBefore(div, osCard.nextSibling);
+  else el.insertBefore(div, el.firstChild);
+}
 async function buscarOZmap(logins) {
   const resultados = new Array(logins.length).fill(null);
+  const unmapped = [];
   await Promise.all(logins.map(async (l, i) => {
     const sec = document.getElementById('ozmap-' + i);
     try {
@@ -2526,6 +2542,7 @@ async function buscarOZmap(logins) {
       const d = await res.json();
       if (!d || d.ok === false) { if (sec) sec.innerHTML = secTOZ() + '<div class="olt-status-msg amarelo">⚠ OZmap indisponível</div>'; return; }
       if (!d.encontrado) {
+        unmapped.push(l);
         if (sec) sec.innerHTML = secTOZ()
           + '<div class="olt-status-msg cinza">Login não mapeado no OZmap</div>'
           + '<div class="btns"><button class="btn-sm btn-blue" data-action="mapear-ozmap" data-p="'+String(l.id)+'" data-p2="'+(l.login||'').replace(/"/g,'&quot;')+'">🗺️ Mapear no OZmap</button></div>';
@@ -2544,6 +2561,8 @@ async function buscarOZmap(logins) {
     if (ozPrimeiro) s.innerHTML = renderOZmapHTML(ozPrimeiro);
     else s.remove(); // sem dado no OZmap: não polui a OS
   });
+  // Pendência destacada no topo: login(s) sem OZmap
+  _mosRenderPendencias(unmapped);
 }
 
 // ═══════════════════════════════════════════════
