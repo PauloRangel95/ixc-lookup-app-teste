@@ -7,6 +7,8 @@ const SOMENTE_OS_TESTE = '';                       // ex.: '1167584' p/ travar; 
 
 function authHeader(){ let v=String(IXC_AUTH).replace(/^Basic\s+/i,'').trim(); if(v.includes(':')) v=Buffer.from(v,'utf8').toString('base64'); return 'Basic '+v; }
 function nowIX(){ const d=new Date(), p=n=>String(n).padStart(2,'0'); return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds()); }
+// Datas de agendamento no IXC exigem formato BR dd/mm/aaaa hh:mm:ss
+function brDate(ms){ const d=new Date(ms==null?Date.now():ms), p=n=>String(n).padStart(2,'0'); return p(d.getDate())+'/'+p(d.getMonth()+1)+'/'+d.getFullYear()+' '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds()); }
 async function ixcWrite(endpoint, payload){ return await this.helpers.httpRequest({ method:'POST', url:`${IXC_BASE}/${endpoint}`,
   headers:{ 'Authorization':authHeader(), 'Content-Type':'application/json' }, body:payload, json:true }); }
 async function ixcList(endpoint, params){ return await this.helpers.httpRequest({ method:'POST', url:`${IXC_BASE}/${endpoint}`,
@@ -48,11 +50,21 @@ try {
     const msg = String(body.mensagem || '').trim();
     if (!msg) return [{ json:{ ok:false, erro:'mensagem é obrigatória' } }];
     const payload = { id_chamado:idChamado, mensagem:msg, id_tecnico:String(body.id_tecnico||''), data_inicio:nowIX(), data_final:nowIX(),
-      tipo_cobranca: (body.tipo_cobranca!=null?String(body.tipo_cobranca):'N') };
+      tipo_cobranca: (body.tipo_cobranca!=null?String(body.tipo_cobranca):'NENHUM') };
     if (body.id_evento) payload.id_evento = String(body.id_evento);
     if (body.status)    payload.status    = String(body.status);
     const r = await ixcWrite.call(this, 'su_oss_chamado_mensagem', payload);
     return [{ json:{ ok:true, acao, id_chamado:idChamado, payload_enviado:payload, resposta:r } }];
+  }
+  // MARCAR P/ AGENDAMENTO (técnico) → OS vai pra RAG; O&M reagenda depois. Datas em formato BR.
+  if (acao === 'reagendar'){
+    const now = brDate();
+    const payload = { id_chamado:idChamado, status:'RAG', id_evento:'10',
+      mensagem: String(body.mensagem || 'Marcada para agendamento pelo técnico.'),
+      id_tecnico: String(body.id_tecnico||''),
+      data: now, data_agendamento: now, data_agendamento_final: brDate(Date.now()+2*3600000) };
+    const r = await ixcWrite.call(this, 'su_oss_chamado_reagendar', payload);
+    return [{ json:{ ok:true, acao, id_chamado:idChamado, resposta:r } }];
   }
   return [{ json:{ ok:false, erro:'ação não suportada: '+acao } }];
 } catch(e){

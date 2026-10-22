@@ -1324,7 +1324,7 @@ async function _osReagendar(idChamado){
   const msg = motivo.trim() || 'Marcada para agendamento pelo técnico.';
   try {
     const r = await fetch(WEBHOOK_OS_ACAO, { method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ acao:'mensagem', id_chamado:String(idChamado), mensagem:msg, id_tecnico:(_mosState.funcId||''), id_evento:'10', status:'RAG', tipo_cobranca:'NENHUM' }) }).then(x=>x.json());
+      body: JSON.stringify({ acao:'reagendar', id_chamado:String(idChamado), mensagem:msg, id_tecnico:(_mosState.funcId||'') }) }).then(x=>x.json());
     const ok = r && r.ok && r.resposta && (r.resposta.type==='success' || r.resposta.id);
     if (ok){ toast('OS marcada para agendamento ✓','ok'); _mosState.osAll=null; setTimeout(abrirMinhasOS, 700); }
     else toast('Falha: '+((r&&r.erro)||(r&&r.resposta&&r.resposta.message)||'erro'),'err');
