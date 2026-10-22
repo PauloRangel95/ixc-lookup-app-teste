@@ -17,6 +17,13 @@ const body = $input.first().json.body || $input.first().json;
 const acao = String(body.acao || '').trim();
 
 try {
+  // ── RAW (TESTE/descoberta — REMOVER antes de ir pra produção) ──
+  if (acao === 'raw'){
+    const ep = String(body.endpoint||'').trim(); const pl = body.payload||{};
+    if (!ep) return [{ json:{ ok:false, erro:'endpoint é obrigatório no raw' } }];
+    const r = await ixcWrite.call(this, ep, pl);
+    return [{ json:{ ok:true, endpoint:ep, payload_enviado:pl, resposta:r } }];
+  }
   // ── LEITURA (sem trava) ──
   if (acao === 'eventos'){
     const r = await ixcList.call(this,'su_oss_evento',{ qtype:'su_oss_evento.id', query:'0', oper:'>', rp:'200', page:'1', sortname:'su_oss_evento.id', sortorder:'asc' });

@@ -724,6 +724,7 @@ document.addEventListener('click', e => {
   if (action==='mos-entrar')          _mosEntrarOS(p);
   if (action==='mos-voltar-lista')    abrirMinhasOS();
   if (action==='os-mensagem')         _osRegistrarMensagem(p);
+  if (action==='os-reagendar')        _osReagendar(p);
   if (action==='mos-detalhe-modal')   { const v=document.getElementById('minhas-os-view'); const c=document.getElementById('os-contexto'); if(c)c.style.display='none'; setState('none'); if(v)v.style.display=''; _mosDetalhe(p); }
   if (action==='toggle-pppoe-pass') {
     const disp = btn.parentElement.querySelector('.pass-display');
@@ -1290,8 +1291,11 @@ function _mosPrependOSCard(o){
   topBtns+='<button class="btn-sm btn-gray" data-action="mos-voltar-lista">← Minhas OS</button>';
   body+='<div class="btns" style="margin-top:8px">'+topBtns+'</div>';
   body+='<div style="margin-top:8px"><div style="font-size:11px;color:var(--tx2);margin-bottom:4px">Ações da OS (teste):</div>'
-    +'<div class="btns"><button class="btn-sm btn-blue" data-action="os-mensagem" data-p="'+o.id+'">➕ Registrar mensagem</button></div>'
-    +'<div style="font-size:10px;color:var(--tx2);margin-top:6px">🚧 Iniciar deslocamento · Executar · Finalizar · Reagendar — em breve</div></div>';
+    +'<div class="btns">'
+    +'<button class="btn-sm btn-blue" data-action="os-mensagem" data-p="'+o.id+'">➕ Registrar mensagem</button>'
+    +'<button class="btn-sm btn-yellow" data-action="os-reagendar" data-p="'+o.id+'">🕐 Marcar p/ agendamento</button>'
+    +'</div>'
+    +'<div style="font-size:10px;color:var(--tx2);margin-top:6px">🚧 Executar · Finalizar — em breve</div></div>';
   const html='<div id="os-card-topo" style="background:var(--bg2);border:1px solid var(--y3);border-radius:10px;padding:12px;margin-bottom:10px">'
     +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px"><strong style="font-family:var(--font-head);color:var(--acc);font-size:14px">🧰 OS #'+o.id+(o.protocolo?' · '+o.protocolo:'')+'</strong> '+stB+' '+prB+'</div>'
     +body+'</div>';
@@ -1312,6 +1316,19 @@ async function _osRegistrarMensagem(idChamado){
     if (ok) toast('Mensagem registrada na OS ✓','ok');
     else toast('Falha: '+((r&&r.erro)||(r&&r.resposta&&r.resposta.message)||'erro'),'err');
   } catch(e){ toast('Erro ao registrar: '+(e.message||''),'err'); }
+}
+// Marcar p/ agendamento = OS vai pra RAG (O&M reagenda). mensagem status=RAG + evento 10 (REAGENDAR).
+async function _osReagendar(idChamado){
+  if (!confirm('Marcar a OS #'+idChamado+' para AGENDAMENTO?\n\nEla sai da sua lista e vai pra fila do O&M reagendar. Você só recebe de volta quando for reagendada.')) return;
+  const motivo = prompt('Motivo (opcional):') || '';
+  const msg = motivo.trim() || 'Marcada para agendamento pelo técnico.';
+  try {
+    const r = await fetch(WEBHOOK_OS_ACAO, { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ acao:'mensagem', id_chamado:String(idChamado), mensagem:msg, id_tecnico:(_mosState.funcId||''), id_evento:'10', status:'RAG', tipo_cobranca:'NENHUM' }) }).then(x=>x.json());
+    const ok = r && r.ok && r.resposta && (r.resposta.type==='success' || r.resposta.id);
+    if (ok){ toast('OS marcada para agendamento ✓','ok'); _mosState.osAll=null; setTimeout(abrirMinhasOS, 700); }
+    else toast('Falha: '+((r&&r.erro)||(r&&r.resposta&&r.resposta.message)||'erro'),'err');
+  } catch(e){ toast('Erro: '+(e.message||''),'err'); }
 }
 // Wiring (os elementos já existem no index.html)
 (function(){
