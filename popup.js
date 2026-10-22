@@ -1,0 +1,3377 @@
+// ═══════════════════════════════════════════════
+// IXC LOOKUP — popup.js v1.6
+// ═══════════════════════════════════════════════
+
+const WEBHOOK_CONTRATO = 'https://carajasnet-n8n.bwadmr.easypanel.host/webhook/ixc-lookup';
+const WEBHOOK_CPF      = 'https://carajasnet-n8n.bwadmr.easypanel.host/webhook/ixc-busca-cpf';
+const IXC_URL          = 'https://ixc.carajasnet.com';
+const WEBHOOK_ACOES    = 'https://carajasnet-n8n.bwadmr.easypanel.host/webhook/ixc-desbloqueio';
+const WEBHOOK_LEITURAS = 'https://carajasnet-n8n.bwadmr.easypanel.host/webhook/ixc-leituras';
+const WEBHOOK_OZMAP    = 'https://carajasnet-n8n.bwadmr.easypanel.host/webhook/ixc-ozmap'; // rede física (OZmap) por login
+const WEBHOOK_OZMAP_MAPA = 'https://carajasnet-n8n.bwadmr.easypanel.host/webhook/ixc-ozmap-mapa'; // CTOs+postes p/ o mapa (Fase 3)
+const WEBHOOK_OZMAP_CRIAR = 'https://carajasnet-n8n.bwadmr.easypanel.host/webhook/ixc-ozmap-criar'; // criar/apagar no OZmap (Fase 3, escrita)
+const OZMAP_CRIAR_LOGIN_TESTE = '9441'; // nesta fase, criação liberada só p/ este login de teste
+const WEBHOOK_HISTSZ   = 'https://carajasnet-n8n.bwadmr.easypanel.host/webhook/ixc-histsz'; // histórico SZ Chat (Supabase via n8n)
+
+// ── Toggle de token (v1.6) ──
+// Modo padrão na 1ª vez: master (mais seguro — não dá erro inesperado)
+let modoToken = 'master'; // 'master' | 'meu'
+function usarTokenMaster() { return modoToken === 'master'; }
+
+// ── Timer de sessão (v1.6) ──
+const AVISO_SESSAO_MIN = 5;       // avisa quando faltam 5min
+const ESTENDER_MIN     = 30;      // botão estende para 30min completos
+let timerSessao = null;
+let avisoMostrado = false;
+
+// PDF.js removido — CSP bloqueia scripts externos
+// Boleto disponível apenas como download direto
+
+// ── Histórico de consultas ────────────────────────
+const MAX_HISTORICO = 5;
+const HIST_KEY = 'ixc_historico_consultas';
+
+// v1.7.6 — persiste em chrome.storage (sobrevive ao fechar do panel),
+// mas Auth.clearSessao() limpa tudo no logout.
+let historicoMem = []; // cache em memória pra UI rápida
+
+async function salvarNoHistorico(contrato_id, cliente_nome, status) {
+  const novo = { contrato_id, cliente_nome, status, ts: Date.now() };
+  historicoMem = [novo, ...historicoMem.filter(h => h.contrato_id !== contrato_id)].slice(0, MAX_HISTORICO);
+  // Persistir
+  await new Promise(r => chrome.storage.local.set({ [HIST_KEY]: historicoMem }, r));
+}
+
+async function carregarHistoricoConsultas() {
+  if (historicoMem.length > 0) return historicoMem;
+  // Carregar do storage
+  const r = await new Promise(res => chrome.storage.local.get([HIST_KEY], d => res(d[HIST_KEY] || [])));
+  historicoMem = r;
+  return historicoMem;
+}
+
+function renderHistorico(hist) {
+  const el = document.getElementById('historico-lista');
+  if (!el) return;
+  if (!hist || !hist.length) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  // v1.7.6 — classe hist-N controla grid (1=cheio, 3=2col+1cheio, 5=2col+2col+1cheio)
+  el.className = 'hist-' + hist.length;
+  el.innerHTML = hist.map(h => {
+    const ativo = h.status && ['Ativo'].includes(h.status);
+    const cls = ativo ? 'hist-ativo' : 'hist-inativo';
+    return '<button class="hist-item ' + cls + '" data-contrato="' + h.contrato_id + '" title="' + (h.cliente_nome || '') + ' — ' + (h.status || '') + '">'
+      + '<span class="hist-nome">' + (h.cliente_nome || 'Contrato') + '</span>'
+      + '<span class="hist-num">#' + h.contrato_id + '</span>'
+      + '</button>';
+  }).join('');
+}
+
+// ── Áudio de alerta (Web Audio API) ───────────
+function tocarAlerta(tipo) {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc  = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    if (tipo === 'manutencao') {
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      osc.frequency.setValueAtTime(660, ctx.currentTime + 0.15);
+      osc.frequency.setValueAtTime(880, ctx.currentTime + 0.30);
+      gain.gain.setValueAtTime(0.3,  ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.45);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.45);
+    } else if (tipo === 'financeiro') {
+      osc.frequency.setValueAtTime(440, ctx.currentTime);
+      osc.frequency.setValueAtTime(330, ctx.currentTime + 0.20);
+      gain.gain.setValueAtTime(0.3,  ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.40);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.40);
+    } else {
+      osc.frequency.setValueAtTime(600, ctx.currentTime);
+      gain.gain.setValueAtTime(0.2,  ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.20);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.20);
+    }
+  } catch(e) {}
+}
+
+// ── Elementos DOM ──────────────────────────────
+const elInput    = document.getElementById('input-id');
+const elBtn      = document.getElementById('btn-buscar');
+const elIdle     = document.getElementById('state-idle');
+const elLoad     = document.getElementById('state-loading');
+const elError    = document.getElementById('state-error');
+const elErrMsg   = document.getElementById('error-msg');
+const elRes      = document.getElementById('results');
+const elLast     = document.getElementById('last-query');
+const elLogin    = document.getElementById('login-screen');
+const elBusca    = document.getElementById('busca-area');
+const elSessao   = document.getElementById('sessao-bar');
+const elSessNome = document.getElementById('sessao-nome');
+const elBtnLogin = document.getElementById('btn-login');
+const elBtnLogout= document.getElementById('btn-logout');
+const elLoginErr = document.getElementById('login-erro');
+
+let sessaoAtual  = null;
+let dadosAtual   = null; // guarda dados do contrato atual
+
+// ── Init ───────────────────────────────────────
+// v1.7.3 — sessão expira via expira_em (definido em auth.js como 4h)
+async function init() {
+  const sessao = await Auth.getSessao();
+  if (sessao) {
+    // Verificar expiração usando expira_em (timestamp ms)
+    const expirado = !sessao.expira_em || sessao.expira_em <= Date.now();
+    if (expirado) {
+      await Auth.clearSessao();
+      historicoMem = [];
+      mostrarLogin();
+      return;
+    }
+    sessaoAtual = sessao;
+    mostrarApp(sessao);
+  } else {
+    mostrarLogin();
+  }
+}
+
+function mostrarLogin() {
+  elLogin.style.display = '';
+  elBusca.style.display = 'none';
+  elSessao.style.display = 'none';
+  // v1.7.3 — esconder elementos que ficavam vazando na tela de login
+  const bc = document.getElementById('cliente-ativo');
+  if (bc) bc.style.display = 'none';
+  const hist = document.getElementById('historico-lista');
+  if (hist) hist.style.display = 'none';
+  const aviso = document.getElementById('sessao-aviso');
+  if (aviso) aviso.style.display = 'none';
+  setState('none');
+}
+
+async function mostrarApp(sessao) {
+  elLogin.style.display = 'none';
+  elBusca.style.display = '';
+  elSessao.style.display = '';
+  elSessNome.textContent = sessao.usuario_nome;
+  // Atualizar botão OLT com status de configuração
+  const oltSessao = await new Promise(r=>chrome.storage.local.get(['olt_sessao'],d=>r(d.olt_sessao||null)));
+  const btnOlt = document.getElementById('btn-olt-config');
+  if (btnOlt) {
+    if (oltSessao?.access) {
+      btnOlt.textContent = '⚡ OLT ✓';
+      btnOlt.style.borderColor = 'var(--g3)';
+      btnOlt.style.color = 'var(--g)';
+    } else {
+      btnOlt.textContent = '⚡ OLT ⚠';
+      btnOlt.style.borderColor = 'var(--y3)';
+      btnOlt.style.color = 'var(--y)';
+    }
+  }
+  // Botão de Gestão (uso + logs) — só para supervisores
+  // v1.7.8 — fetch direto Supabase (dispensa workflow)
+  {
+    let ehSupervisor = false;
+    try {
+      const emailBusca = sessao.usuario_email || sessao.usuario_login || '';
+      const SUPABASE_KEY = '';
+      const supRes = await fetch(
+        `https://carajasnet-supabase.bwadmr.easypanel.host/rest/v1/colaboradores_tokens?email=eq.${encodeURIComponent(emailBusca)}&select=supervisor,email`,
+        { headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` } }
+      );
+      const supData = await supRes.json();
+      if (Array.isArray(supData) && supData.length > 0) {
+        ehSupervisor = supData[0]?.supervisor === true;
+      }
+    } catch(e) {
+      console.warn('[IXC] Erro supervisor:', e.message);
+    }
+    const btnGestao = document.getElementById('btn-gestao');
+    if (btnGestao) btnGestao.style.display = ehSupervisor ? '' : 'none';
+    if (ehSupervisor) sessao._supervisor = true;
+  }
+  // Toggle de token + timer de sessão (v1.6)
+  await carregarToggleToken();
+  iniciarTimerSessao();
+
+  carregarHistoricoConsultas().then(renderHistorico);
+  setState('idle');
+  elInput.focus();
+}
+
+function setState(s) {
+  elIdle.style.display  = s==='idle'   ? '':'none';
+  elLoad.style.display  = s==='loading'? '':'none';
+  elError.style.display = s==='error'  ? '':'none';
+  elRes.style.display   = s==='result' ? '':'none';
+  if (s==='none') { elIdle.style.display='none'; elLoad.style.display='none'; elError.style.display='none'; elRes.style.display='none'; }
+}
+
+// ── Login ──────────────────────────────────────
+elBtnLogin.addEventListener('click', async () => {
+  const user = document.getElementById('login-user').value.trim();
+  const pass = document.getElementById('login-pass').value;
+  if (!user || !pass) { elLoginErr.textContent='Preencha usuário e senha.'; elLoginErr.style.display=''; return; }
+  elBtnLogin.disabled = true; elBtnLogin.textContent = 'Entrando...';
+  elLoginErr.style.display = 'none';
+  try {
+    const sessao = await Auth.fazerLogin(user, pass);
+    sessaoAtual = sessao;
+    await Logger.registrarLog(sessao, 'LOGIN', {});
+    mostrarApp(sessao);
+    // Verificar se OLT Cloud está configurado — se não, sugerir
+    const oltSessao = await new Promise(r=>chrome.storage.local.get(['olt_sessao'],d=>r(d.olt_sessao||null)));
+    if (!oltSessao) {
+      setTimeout(()=>{
+        document.getElementById('olt-config-modal').style.display='flex';
+      }, 800);
+    }
+  } catch(e) { elLoginErr.textContent = e.message||'Erro ao fazer login.'; elLoginErr.style.display=''; }
+  finally { elBtnLogin.disabled=false; elBtnLogin.textContent='Entrar'; }
+});
+document.getElementById('login-pass').addEventListener('keydown', e => { if(e.key==='Enter') elBtnLogin.click(); });
+document.getElementById('login-user').addEventListener('keydown', e => { if(e.key==='Enter') elBtnLogin.click(); }); // v1.6
+
+// Clique no histórico
+document.addEventListener('click', e => {
+  const btn = e.target.closest('.hist-item');
+  if (!btn) return;
+  const id = btn.getAttribute('data-contrato');
+  if (id) {
+    document.getElementById('input-id').value = id;
+    buscar();
+  }
+});
+
+elBtnLogout.addEventListener('click', async () => {
+  await Logger.registrarLog(sessaoAtual, 'LOGOUT', {});
+  await Auth.clearSessao(); // v1.7 — limpa todo o storage exceto tema/faixas/olt_sessao
+  historicoMem = [];        // v1.7 — limpa histórico em memória
+  sessaoAtual = null; dadosAtual = null;
+  const bc2 = document.getElementById('cliente-ativo');
+  if (bc2) bc2.style.display = 'none';
+  const histEl = document.getElementById('historico-lista');
+  if (histEl) histEl.style.display = 'none';
+  mostrarLogin();
+});
+
+document.getElementById('btn-olt-config').addEventListener('click', async () => {
+  const modal = document.getElementById('olt-config-modal');
+  modal.style.display = 'flex';
+  const s = await new Promise(r => chrome.storage.local.get(['olt_sessao'], d => r(d.olt_sessao||null)));
+  if (s?.username) document.getElementById('olt-user').value = s.username;
+});
+document.getElementById('olt-config-cancel').addEventListener('click', () => { document.getElementById('olt-config-modal').style.display='none'; });
+
+// ── Logs (aba dentro de Gestão) ───────────────────────
+let logsCache = [];        // últimos logs buscados (p/ exportar PDF)
+let logsFiltroCache = '';  // descrição do filtro aplicado
+document.getElementById('logs-buscar').addEventListener('click', async () => {
+  const cpf     = document.getElementById('logs-filtro-cpf').value.trim();
+  const usuario = document.getElementById('logs-filtro-usuario').value.trim();
+  const resEl   = document.getElementById('logs-resultado');
+  resEl.innerHTML = '<div style="color:var(--tx2)">⏳ Buscando...</div>';
+
+  try {
+    // PWA — logs via n8n (sem anon key); o servidor valida supervisor
+    const email = sessaoAtual?.usuario_email || sessaoAtual?.usuario_login || '';
+    const res = await fetch('https://carajasnet-n8n.bwadmr.easypanel.host/webhook/ixc-gestao-pwa', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, modo: 'logs', cpf, usuario })
+    });
+    const resp = await res.json();
+    const logs = Array.isArray(resp?.logs) ? resp.logs : [];
+    logsCache = logs;
+    logsFiltroCache = [cpf && ('contrato/cliente: '+cpf), usuario && ('colaborador: '+usuario)].filter(Boolean).join(' · ') || 'sem filtro';
+
+    if (!logs?.length) {
+      resEl.innerHTML = '<div class="empty">Nenhum log encontrado.</div>';
+      return;
+    }
+
+    const ACAO_COR = {
+      'LOGIN':'azul','LOGOUT':'cinza','CONSULTA_CONTRATO':'azul',
+      'CONSULTA_CPF':'azul','DESBLOQUEIO_CONFIANCA':'amarelo','DESCONEXAO_LOGIN':'amarelo'
+    };
+    const ACAO_ICON = {
+      'LOGIN':'🔑','LOGOUT':'🚪','CONSULTA_CONTRATO':'🔍',
+      'CONSULTA_CPF':'🔍','DESBLOQUEIO_CONFIANCA':'🔓','DESCONEXAO_LOGIN':'⚡'
+    };
+
+    resEl.innerHTML = logs.map(l => {
+      const cor  = ACAO_COR[l.acao] || 'cinza';
+      const icon = ACAO_ICON[l.acao] || '•';
+      const dt   = new Date(l.criado_em).toLocaleString('pt-BR');
+      const det  = l.detalhes ? (typeof l.detalhes === 'string' ? JSON.parse(l.detalhes) : l.detalhes) : {};
+      const detTxt = Object.entries(det).map(([k,v])=>`${k}: ${v}`).join(' | ');
+      return `<div style="border:1px solid var(--b);border-radius:var(--radius-sm);padding:8px 10px;margin-bottom:5px;background:var(--bg3)">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+          <span class="badge ${cor}">${icon} ${l.acao}</span>
+          <span style="font-family:var(--font-mono);font-size:10px;color:var(--tx2)">${dt}</span>
+          ${l.sucesso?'':'<span class="badge vermelho">FALHOU</span>'}
+        </div>
+        <div style="font-size:11px;color:var(--tx);font-weight:600">${l.usuario_nome} (${l.usuario_login})</div>
+        ${l.cliente_nome?`<div style="font-size:11px;color:var(--tx2)">Cliente: ${l.cliente_nome} — Contrato: #${l.contrato_id||'—'}</div>`:''}
+        ${detTxt?`<div style="font-size:10px;color:var(--tx3);margin-top:2px;font-family:var(--font-mono)">${detTxt}</div>`:''}
+        ${l.erro?`<div style="font-size:10px;color:var(--r);margin-top:2px">Erro: ${l.erro}</div>`:''}
+      </div>`;
+    }).join('');
+
+  } catch(e) {
+    resEl.innerHTML = `<div style="color:var(--r)">Erro ao buscar logs: ${e.message}</div>`;
+  }
+});
+
+// ── Gestão de Uso (supervisor) ─────────────────────────
+const GESTAO_KEY = '';
+const GESTAO_LOGS_URL = 'https://carajasnet-supabase.bwadmr.easypanel.host/rest/v1/ixc_logs';
+
+let gestaoAbaAtiva = 'uso';
+let gestaoPeriodoAtivo = '7';
+let gestaoCargoFiltro = 'todos';   // 'todos' | 'tecnico' | 'atendente'
+let gestaoAgregadoCache = null; // { ag, periodo } — ag é SEMPRE o agregado completo (sem filtro de cargo)
+
+// Grupo de usuário do IXC -> cargo (1 = técnico, 2 = atendente)
+function cargoDeGrupo(g) {
+  const n = Number(g);
+  if (n === 1) return 'tecnico';
+  if (n === 2) return 'atendente';
+  return 'outro';
+}
+function cargoLabel(c) { return c === 'tecnico' ? 'Técnico' : c === 'atendente' ? 'Atendente' : '—'; }
+
+(function initGestao(){
+  const btnG = document.getElementById('btn-gestao');
+  if (btnG) btnG.addEventListener('click', () => {
+    document.getElementById('gestao-modal').style.display = 'flex';
+    setGestaoAba('uso');
+    gestaoCargoFiltro = 'todos';
+    atualizarBotoesCargo();
+    setGestaoPeriodo('7');
+  });
+  const fecharG = document.getElementById('gestao-fechar');
+  if (fecharG) fecharG.addEventListener('click', () => {
+    document.getElementById('gestao-modal').style.display = 'none';
+  });
+  document.querySelectorAll('.gestao-periodo').forEach(b => {
+    b.addEventListener('click', () => setGestaoPeriodo(b.dataset.periodo));
+  });
+  document.querySelectorAll('.gestao-tab').forEach(b => {
+    b.addEventListener('click', () => setGestaoAba(b.dataset.gtab));
+  });
+  document.querySelectorAll('.gestao-cargo').forEach(b => {
+    b.addEventListener('click', () => setGestaoCargo(b.dataset.cargo));
+  });
+  const btnPdf = document.getElementById('gestao-pdf');
+  if (btnPdf) btnPdf.addEventListener('click', exportarRelatorioPDF);
+})();
+
+function setGestaoAba(aba) {
+  gestaoAbaAtiva = aba;
+  document.querySelectorAll('.gestao-tab').forEach(b => b.classList.toggle('ativa', b.dataset.gtab === aba));
+  const uso  = document.getElementById('gtab-uso');
+  const logs = document.getElementById('gtab-logs');
+  if (uso)  uso.style.display  = aba === 'uso'  ? '' : 'none';
+  if (logs) logs.style.display = aba === 'logs' ? '' : 'none';
+}
+
+function setGestaoPeriodo(p) {
+  gestaoPeriodoAtivo = p;
+  document.querySelectorAll('.gestao-periodo').forEach(b => {
+    const ativo = b.dataset.periodo === p;
+    b.classList.toggle('btn-blue', ativo);
+    b.classList.toggle('btn-gray', !ativo);
+  });
+  carregarGestao(p);
+}
+
+function atualizarBotoesCargo() {
+  document.querySelectorAll('.gestao-cargo').forEach(b => {
+    const ativo = b.dataset.cargo === gestaoCargoFiltro;
+    b.classList.toggle('btn-blue', ativo);
+    b.classList.toggle('btn-gray', !ativo);
+  });
+}
+
+function setGestaoCargo(c) {
+  gestaoCargoFiltro = c || 'todos';
+  atualizarBotoesCargo();
+  // Re-renderiza a partir do cache (não precisa buscar de novo no servidor)
+  const el = document.getElementById('gestao-resultado');
+  if (el && gestaoAgregadoCache) el.innerHTML = renderGestao(filtrarAgregadoPorCargo(gestaoAgregadoCache.ag, gestaoCargoFiltro));
+}
+
+// Recalcula os conjuntos derivados (ativos/ociosos/total) sobre uma lista já filtrada
+function derivarConjuntosGestao(lista) {
+  const AGORA = Date.now();
+  const SESSAO_MS = 4*3600*1000;
+  const totalAcoes = lista.reduce((s,u)=>s+u.acoes,0);
+  const ativos  = lista.filter(u => (AGORA-u.ultimo) < SESSAO_MS && u.ultimaAcao!=='LOGOUT');
+  const ociosos = lista.filter(u => (u.byAcao['LOGIN']||0)>0 && u.acoes<=1);
+  return { AGORA, lista, totalAcoes, ativos, ociosos };
+}
+
+// Aplica o filtro de cargo ao agregado completo, devolvendo um novo agregado
+function filtrarAgregadoPorCargo(ag, cargo) {
+  if (!cargo || cargo === 'todos') return ag;
+  // 'atendente' inclui quem não é técnico (grupo desconhecido = atendente por padrão)
+  const lista = ag.lista.filter(u => cargo === 'tecnico' ? u.cargo === 'tecnico' : u.cargo !== 'tecnico');
+  return derivarConjuntosGestao(lista);
+}
+
+function gestaoPeriodoLabel(p) {
+  return p === 'hoje' ? 'Hoje' : (p === '30' ? 'Últimos 30 dias' : 'Últimos 7 dias');
+}
+
+function gestaoSinceISO(p) {
+  if (p === 'hoje') { const d = new Date(); d.setHours(0,0,0,0); return d.toISOString(); }
+  const dias = p === '30' ? 30 : 7;
+  return new Date(Date.now() - dias*86400000).toISOString();
+}
+
+async function carregarGestao(periodo) {
+  const el = document.getElementById('gestao-resultado');
+  if (!el) return;
+  el.innerHTML = '⏳ Carregando...';
+  try {
+    // PWA — Uso via n8n (sem anon key); o servidor valida supervisor
+    const email = sessaoAtual?.usuario_email || sessaoAtual?.usuario_login || '';
+    const res = await fetch('https://carajasnet-n8n.bwadmr.easypanel.host/webhook/ixc-gestao-pwa', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, modo: 'uso', periodo })
+    });
+    const resp = await res.json();
+    const logs = Array.isArray(resp?.logs) ? resp.logs : [];
+    if (!Array.isArray(logs) || !logs.length) { gestaoAgregadoCache = null; el.innerHTML = '<div class="empty">Nenhuma atividade no período.</div>'; return; }
+    const ag = agregarGestao(logs);
+    gestaoAgregadoCache = { ag, periodo };
+    el.innerHTML = renderGestao(filtrarAgregadoPorCargo(ag, gestaoCargoFiltro));
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--r)">Erro ao carregar gestão: ${e.message}</div>`;
+  }
+}
+
+function agregarGestao(logs) {
+  const AGORA = Date.now();
+  const SESSAO_MS = 4*3600*1000;
+  const NAO_ACAO = new Set(['LOGIN','LOGOUT']);
+  const users = {};
+  logs.forEach(l => {
+    const key = l.usuario_login || l.usuario_nome || ('id'+l.usuario_id) || '—';
+    if (!users[key]) users[key] = { login:key, nome:l.usuario_nome||key, total:0, acoes:0, falhas:0, byAcao:{}, ultimo:null, ultimaAcao:null, versao:null, id_grupo:null, cargo:'outro' };
+    const u = users[key];
+    u.byAcao[l.acao] = (u.byAcao[l.acao]||0)+1;
+    u.total++;
+    if (!NAO_ACAO.has(l.acao)) u.acoes++;
+    if (l.sucesso === false) u.falhas++;
+    const t = new Date(l.criado_em).getTime();
+    if (u.ultimo===null || t>u.ultimo) { u.ultimo=t; u.ultimaAcao=l.acao; }
+    if (!u.versao && l.extensao_versao) u.versao = l.extensao_versao; // logs DESC → 1º não-nulo = mais recente
+    if (u.id_grupo==null && l.id_grupo!=null) { u.id_grupo = l.id_grupo; u.cargo = cargoDeGrupo(l.id_grupo); }
+  });
+  const lista = Object.values(users);
+  const totalAcoes = lista.reduce((s,u)=>s+u.acoes,0);
+  const ativos  = lista.filter(u => (AGORA-u.ultimo) < SESSAO_MS && u.ultimaAcao!=='LOGOUT');
+  const ociosos = lista.filter(u => (u.byAcao['LOGIN']||0)>0 && u.acoes<=1);
+  return { AGORA, lista, totalAcoes, ativos, ociosos };
+}
+
+function renderGestao(ag) {
+  const { AGORA, lista, totalAcoes, ativos, ociosos } = ag;
+  const GROW = 'display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 8px;border-bottom:1px solid var(--b);font-size:11px;color:var(--tx)';
+  const tempoRel = ms => { if(!ms) return '—'; const m=Math.floor((AGORA-ms)/60000); if(m<1)return 'agora'; if(m<60)return m+'min atrás'; const h=Math.floor(m/60); if(h<24)return h+'h atrás'; return Math.floor(h/24)+'d atrás'; };
+  const consultas = u => (u.byAcao['CONSULTA_CONTRATO']||0)+(u.byAcao['CONSULTA_CPF']||0);
+
+  let html = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+    ${cardGestao('Colaboradores', lista.length, 'acc')}
+    ${cardGestao('Ações no período', totalAcoes, 'acc')}
+    ${cardGestao('Ativos agora', ativos.length, ativos.length?'g':'tx2')}
+    ${cardGestao('Ociosos', ociosos.length, ociosos.length?'y':'tx2')}
+  </div>`;
+
+  html += secaoGestao('🟢 Ativos agora <span style="font-weight:400;color:var(--tx3);font-size:10px">(login nas últimas 4h, sem logout)</span>', ativos.length
+    ? ativos.sort((a,b)=>b.ultimo-a.ultimo).map(u=>`<div style="${GROW}"><span>${u.nome}</span><span style="color:var(--g)">${tempoRel(u.ultimo)} · ${u.acoes} ação(ões)</span></div>`).join('')
+    : '<div style="color:var(--tx3);font-size:11px">Ninguém ativo na janela de sessão.</div>');
+
+  const ranking = [...lista].sort((a,b)=>b.acoes-a.acoes).slice(0,15);
+  const maxR = ranking[0]?.acoes || 1;
+  html += secaoGestao('🏆 Ranking de uso', ranking.map((u,i)=>{
+    const pct = Math.round((u.acoes/maxR)*100);
+    return `<div style="${GROW}"><span>${i+1}. ${u.nome}</span><span style="display:flex;align-items:center;gap:6px"><span style="width:60px;height:6px;background:var(--bg4);border-radius:3px;overflow:hidden;display:inline-block"><span style="display:block;height:100%;width:${pct}%;background:var(--acc)"></span></span><strong>${u.acoes}</strong></span></div>`;
+  }).join(''));
+
+  html += secaoGestao('💤 Logados sem (quase) atividade', ociosos.length
+    ? ociosos.sort((a,b)=>(b.byAcao['LOGIN']||0)-(a.byAcao['LOGIN']||0)).map(u=>`<div style="${GROW}"><span>${u.nome}</span><span style="color:var(--tx3)">${u.byAcao['LOGIN']||0} login(s) · ${u.acoes} ação(ões)</span></div>`).join('')
+    : '<div style="color:var(--tx3);font-size:11px">Nenhum colaborador ocioso.</div>');
+
+  const linhas = [...lista].sort((a,b)=>b.acoes-a.acoes).map(u=>`<tr style="border-bottom:1px solid var(--b)">
+    <td style="padding:4px 6px">${u.nome}</td>
+    <td style="text-align:center">${cargoLabel(u.cargo)}</td>
+    <td style="text-align:center">${u.versao?('v'+u.versao):'—'}</td>
+    <td style="text-align:center">${consultas(u)}</td>
+    <td style="text-align:center">${u.byAcao['DESBLOQUEIO_CONFIANCA']||0}</td>
+    <td style="text-align:center">${u.byAcao['ENVIAR_BOLETO_EMAIL']||0}</td>
+    <td style="text-align:center">${u.byAcao['AGENDAR_OS']||0}</td>
+    <td style="text-align:center;color:${u.falhas?'var(--r)':'var(--tx3)'}">${u.falhas}</td>
+    <td style="font-size:9px;color:var(--tx3)">${tempoRel(u.ultimo)}</td>
+  </tr>`).join('');
+  html += secaoGestao('👤 Por colaborador', `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:10px;color:var(--tx)">
+    <thead><tr style="color:var(--tx3);text-align:left">
+      <th style="padding:4px 6px">Colaborador</th><th style="text-align:center">Cargo</th><th style="text-align:center">Versão</th><th style="text-align:center" title="Consultas (contrato + CPF)">🔍</th><th style="text-align:center" title="Desbloqueios">🔓</th><th style="text-align:center" title="Boletos por e-mail">✉</th><th style="text-align:center" title="OS agendadas">🛠</th><th style="text-align:center" title="Falhas">⚠</th><th>Último acesso</th>
+    </tr></thead><tbody>${linhas}</tbody></table></div>`);
+
+  return html;
+}
+
+function cardGestao(label, val, cor) {
+  return `<div style="flex:1;min-width:110px;background:var(--bg3);border:1px solid var(--b);border-radius:var(--radius-sm);padding:8px 10px">
+    <div style="font-size:9px;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px">${label}</div>
+    <div style="font-size:20px;font-weight:700;color:var(--${cor})">${val}</div>
+  </div>`;
+}
+function secaoGestao(titulo, conteudo) {
+  return `<div style="margin-bottom:16px">
+    <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--tx);margin-bottom:6px">${titulo}</div>
+    ${conteudo}
+  </div>`;
+}
+
+// ── Exportar relatório em PDF ─────────────────────────
+// Abre uma página da extensão (relatorio.html) que imprime → "Salvar como PDF".
+// Feito assim (e não inline) por causa da CSP da extensão.
+function escPdf(s){ return String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function abrirRelatorioPDF(titulo, corpoHtml) {
+  chrome.storage.local.set({ ixc_relatorio: { titulo, corpoHtml, ts: Date.now() } }, () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL('relatorio.html') });
+  });
+}
+
+function exportarRelatorioPDF() {
+  if (gestaoAbaAtiva === 'logs') exportarLogsPDF();
+  else exportarUsoPDF();
+}
+
+function exportarUsoPDF() {
+  if (!gestaoAgregadoCache) { toast('Nada para exportar — carregue a aba Uso primeiro.','err'); return; }
+  const { periodo } = gestaoAgregadoCache;
+  // Respeita o filtro de cargo ativo (Todos / Técnicos / Atendentes)
+  const ag = filtrarAgregadoPorCargo(gestaoAgregadoCache.ag, gestaoCargoFiltro);
+  const { lista, totalAcoes, ativos, ociosos, AGORA } = ag;
+  const tempoRel = ms => { if(!ms) return '—'; const m=Math.floor((AGORA-ms)/60000); if(m<1)return 'agora'; if(m<60)return m+'min atrás'; const h=Math.floor(m/60); if(h<24)return h+'h atrás'; return Math.floor(h/24)+'d atrás'; };
+  const consultas = u => (u.byAcao['CONSULTA_CONTRATO']||0)+(u.byAcao['CONSULTA_CPF']||0);
+  const subtitulo = 'font-weight:400;color:#666;font-size:11px';
+  const ranking = [...lista].sort((a,b)=>b.acoes-a.acoes);
+
+  const linhasColab = ranking.map((u,i)=>`<tr>
+    <td class="tcenter">${i+1}</td><td>${escPdf(u.nome)}</td>
+    <td class="tcenter">${cargoLabel(u.cargo)}</td>
+    <td class="tcenter">${u.versao?('v'+escPdf(u.versao)):'—'}</td>
+    <td class="tcenter">${u.acoes}</td>
+    <td class="tcenter">${consultas(u)}</td>
+    <td class="tcenter">${u.byAcao['DESBLOQUEIO_CONFIANCA']||0}</td>
+    <td class="tcenter">${u.byAcao['ENVIAR_BOLETO_EMAIL']||0}</td>
+    <td class="tcenter">${u.byAcao['AGENDAR_OS']||0}</td>
+    <td class="tcenter ${u.falhas?'err':''}">${u.falhas}</td>
+    <td>${tempoRel(u.ultimo)}</td>
+  </tr>`).join('');
+
+  const linhasAtivos = ativos.length
+    ? ativos.sort((a,b)=>b.ultimo-a.ultimo).map(u=>`<tr><td>${escPdf(u.nome)}</td><td>${tempoRel(u.ultimo)}</td><td class="tcenter">${u.acoes}</td></tr>`).join('')
+    : `<tr><td colspan="3">Ninguém ativo na janela de sessão (4h).</td></tr>`;
+
+  const linhasRanking = ranking.map((u,i)=>`<tr><td class="tcenter">${i+1}</td><td>${escPdf(u.nome)}</td><td class="tcenter">${u.acoes}</td></tr>`).join('');
+
+  const ociososOrd = [...ociosos].sort((a,b)=>(b.byAcao['LOGIN']||0)-(a.byAcao['LOGIN']||0));
+  const linhasOciosos = ociososOrd.length
+    ? ociososOrd.map(u=>`<tr><td>${escPdf(u.nome)}</td><td class="tcenter">${u.byAcao['LOGIN']||0}</td><td class="tcenter">${u.acoes}</td></tr>`).join('')
+    : `<tr><td colspan="3">Nenhum colaborador ocioso.</td></tr>`;
+
+  const corpo = `
+    <h1>Relatório de Uso — CKS Lookup</h1>
+    <div class="muted">Período: ${escPdf(gestaoPeriodoLabel(periodo))} · Filtro: ${escPdf(gestaoCargoFiltro==='tecnico'?'Técnicos':gestaoCargoFiltro==='atendente'?'Atendentes':'Todos')} · Gerado em ${new Date().toLocaleString('pt-BR')}</div>
+
+    <h2>Resumo</h2>
+    <table><thead><tr><th>Colaboradores</th><th>Ações no período</th><th>Ativos agora</th><th>Ociosos</th></tr></thead>
+    <tbody><tr><td class="tcenter">${lista.length}</td><td class="tcenter">${totalAcoes}</td><td class="tcenter">${ativos.length}</td><td class="tcenter">${ociosos.length}</td></tr></tbody></table>
+
+    <h2>🟢 Ativos agora <span style="${subtitulo}">(login nas últimas 4h, sem logout)</span></h2>
+    <table><thead><tr><th>Colaborador</th><th>Último acesso</th><th>Ações</th></tr></thead><tbody>${linhasAtivos}</tbody></table>
+
+    <h2>🏆 Ranking de uso</h2>
+    <table><thead><tr><th>#</th><th>Colaborador</th><th>Ações</th></tr></thead><tbody>${linhasRanking}</tbody></table>
+
+    <h2>💤 Logados sem (quase) atividade</h2>
+    <table><thead><tr><th>Colaborador</th><th>Logins</th><th>Ações</th></tr></thead><tbody>${linhasOciosos}</tbody></table>
+
+    <h2>👤 Por colaborador</h2>
+    <table><thead><tr><th>#</th><th>Colaborador</th><th>Cargo</th><th>Versão</th><th>Ações</th><th>Consultas</th><th>Desbloq.</th><th>Boletos</th><th>OS</th><th>Falhas</th><th>Último acesso</th></tr></thead>
+    <tbody>${linhasColab}</tbody></table>`;
+  abrirRelatorioPDF('Relatório de Uso — CKS Lookup', corpo);
+}
+
+function exportarLogsPDF() {
+  if (!logsCache.length) { toast('Busque os logs antes de exportar.','err'); return; }
+  const linhas = logsCache.map(l=>{
+    const det = l.detalhes ? (typeof l.detalhes==='string'? l.detalhes : JSON.stringify(l.detalhes)) : '';
+    return `<tr>
+      <td>${new Date(l.criado_em).toLocaleString('pt-BR')}</td>
+      <td>${escPdf(l.usuario_nome)} (${escPdf(l.usuario_login)})</td>
+      <td>${escPdf(l.acao)}</td>
+      <td>${escPdf(l.cliente_nome||'')}${l.contrato_id?(' #'+escPdf(l.contrato_id)):''}</td>
+      <td class="${l.sucesso===false?'err':'ok'}">${l.sucesso===false?'FALHOU':'OK'}</td>
+      <td>${escPdf(det)}${l.erro?(' | erro: '+escPdf(l.erro)):''}</td>
+    </tr>`;
+  }).join('');
+  const corpo = `
+    <h1>Relatório de Logs — CKS Lookup</h1>
+    <div class="muted">Filtro: ${escPdf(logsFiltroCache||'sem filtro')} · ${logsCache.length} registro(s) · Gerado em ${new Date().toLocaleString('pt-BR')}</div>
+    <table><thead><tr><th>Data/Hora</th><th>Colaborador</th><th>Ação</th><th>Cliente / Contrato</th><th>Status</th><th>Detalhes</th></tr></thead>
+    <tbody>${linhas}</tbody></table>`;
+  abrirRelatorioPDF('Relatório de Logs — CKS Lookup', corpo);
+}
+
+// ── Sinal OLT (somente informativo — faixas padrão fixas para todos) ──
+document.getElementById('btn-config').addEventListener('click', () => {
+  const set = (id,v)=>{ const el=document.getElementById(id); if(el) el.value=v; };
+  set('cfg-sinal-verde', CFG_SINAL.verde);
+  set('cfg-sinal-amarelo', CFG_SINAL.amarelo);
+  set('cfg-temp-amarelo', CFG_SINAL.tempAmarelo);
+  set('cfg-temp-vermelho', CFG_SINAL.tempVermelho);
+  document.getElementById('config-modal').style.display = 'flex';
+});
+document.getElementById('cfg-cancelar').addEventListener('click', ()=>{
+  document.getElementById('config-modal').style.display='none';
+});
+
+// ── Tema claro/escuro ─────────────────────────────────
+document.getElementById('btn-tema').addEventListener('click', async () => {
+  const atual = document.documentElement.getAttribute('data-tema')||'escuro';
+  const novo  = atual==='claro'?'escuro':'claro';
+  document.documentElement.setAttribute('data-tema', novo);
+  document.getElementById('btn-tema').textContent = novo==='claro'?'🌙':'☀';
+  await new Promise(r=>chrome.storage.local.set({tema:novo},r));
+});
+document.getElementById('olt-config-save').addEventListener('click', async () => {
+  const user = document.getElementById('olt-user').value.trim();
+  const pass = document.getElementById('olt-pass').value;
+  const erro = document.getElementById('olt-config-erro');
+  if (!user||!pass) { erro.textContent='Preencha e-mail e senha.'; erro.style.display=''; return; }
+  erro.style.display='none';
+  document.getElementById('olt-config-save').textContent='Verificando...';
+  try {
+    const res = await fetch('https://carajas.oltcloud.co/api/token', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({username:user,password:pass})
+    });
+    if (!res.ok) throw new Error('Credenciais inválidas');
+    const data = await res.json();
+    if (!data.access) throw new Error('Token não retornado');
+    await new Promise(r => chrome.storage.local.set({olt_sessao:{username:user,password:pass,access:data.access,refresh:data.refresh}},r));
+    document.getElementById('olt-config-modal').style.display='none';
+    toast('OLT Cloud configurado!','ok');
+    // Atualizar botão
+    const btnOlt2 = document.getElementById('btn-olt-config');
+    if (btnOlt2) { btnOlt2.textContent='⚡ OLT ✓'; btnOlt2.style.borderColor='var(--g3)'; btnOlt2.style.color='var(--g)'; }
+  } catch(e) { erro.textContent=e.message||'Erro ao conectar'; erro.style.display=''; }
+  finally { document.getElementById('olt-config-save').textContent='Salvar'; }
+});
+
+// ── Event Delegation ───────────────────────────
+document.addEventListener('click', e => {
+  // v1.7.5 — troca de aba
+  const tabBtn = e.target.closest('[data-tab-target]');
+  if (tabBtn) { trocarAba(tabBtn.getAttribute('data-tab-target')); return; }
+
+  const h = e.target.closest('[data-toggle]');
+  if (h) { toggle(h.getAttribute('data-toggle')); return; }
+  const cc = e.target.closest('[data-contrato-id]');
+  if (cc) { selecionarContrato(cc.getAttribute('data-contrato-id')); return; }
+  const btn = e.target.closest('[data-action]');
+  if (!btn) return;
+  const action = btn.getAttribute('data-action');
+  const p  = btn.getAttribute('data-p') ||'';
+  const p2 = btn.getAttribute('data-p2')||'';
+  const p3 = btn.getAttribute('data-p3')||'';
+  if (action==='copy')        copiarSecao(p);
+  if (action==='copiar-tudo') copiarTudo();
+  if (action==='atualizar-cache') buscarContrato(p, true);
+  if (action==='boleto')      carregarBoleto(p, p2);
+  if (action==='link')        abrirLink(p);
+  if (action==='whatsapp')    abrirWhatsApp(p);
+  if (action==='roteador')    abrirRoteador(p,p2);
+  if (action==='desbloquear') desbloquearConfianca(p,p2);
+  if (action==='desconectar') desconectarLogin(p,p2,p3);
+  if (action==='reboot-onu')  rebootONU(p,p2,p3);
+  if (action==='pix')         copiarPIX(p);
+  if (action==='enviar-boleto-email') enviarBoletoEmail(p, p2);
+  if (action==='abrir-agendar')       abrirAgendarOS(p, p2);
+  if (action==='potencia-onu')        consultarPotenciaONU(p, p2);
+  if (action==='mapear-ozmap')        abrirMapaOZmap(p, p2);
+  if (action==='toggle-pppoe-pass') {
+    const disp = btn.parentElement.querySelector('.pass-display');
+    if (disp) {
+      const showing = disp.getAttribute('data-showing') === '1';
+      if (showing) {
+        disp.textContent = '••••••••';
+        disp.removeAttribute('data-showing');
+        btn.textContent = '👁';
+      } else {
+        disp.textContent = disp.getAttribute('data-pass') || '';
+        disp.setAttribute('data-showing','1');
+        btn.textContent = '🙈';
+      }
+    }
+  }
+});
+
+// Mostrar/ocultar senha
+document.addEventListener('click', e => {
+  const btn = e.target.closest('.btn-show-pass');
+  if (!btn) return;
+  const targetId = btn.getAttribute('data-target');
+  const input = document.getElementById(targetId);
+  if (!input) return;
+  if (input.type === 'password') {
+    input.type = 'text';
+    btn.textContent = '🙈';
+  } else {
+    input.type = 'password';
+    btn.textContent = '👁';
+  }
+});
+
+function toggle(id) {
+  let b = document.querySelector(`[data-item-id="body-${id}"]`)||document.getElementById('body-'+id);
+  const c = document.getElementById('chev-'+id);
+  if (!b) return;
+  const open = !b.classList.contains('collapsed');
+  b.classList.toggle('collapsed',open);
+  if (c) c.classList.toggle('open',!open);
+}
+
+// v1.7.5 — troca de aba ativa + lazy-load on-demand
+let abaAtual = 'geral';
+function trocarAba(tab) {
+  if (!tab || tab === abaAtual) return;
+  abaAtual = tab;
+  // Atualiza estado visual dos botões
+  document.querySelectorAll('.tab-btn').forEach(b => {
+    b.classList.toggle('active', b.getAttribute('data-tab-target') === tab);
+  });
+  // Mostra/esconde cards conforme aba
+  document.querySelectorAll('.card[data-tab]').forEach(c => {
+    c.style.display = c.getAttribute('data-tab') === tab ? '' : 'none';
+  });
+  // Lazy-load: dispara carregamento das seções pesadas só quando a aba é aberta
+  // (mantém comportamento original que era ao clicar no card)
+  if (tab === 'atendimento') triggerLazyByCardId('tickets');
+  if (tab === 'historicos')  { triggerLazyByCardId('hist-contrato'); triggerLazyByCardId('negociacoes'); }
+  if (tab === 'sz')          triggerLazyByCardId('histsz');
+  if (tab === 'servicos')    { triggerLazyByCardId('produtos-contrato'); triggerLazyByCardId('tv-sva'); }
+}
+
+// Helper — dispara o lazy-load do card pela aba (não precisa de clique no placeholder)
+async function triggerLazyByCardId(cardId) {
+  const body = document.getElementById('body-' + cardId);
+  if (!body) return;
+  if (body.dataset.loaded === 'true') return;
+
+  // Encontra o elemento placeholder .lazy-load dentro do body
+  const lazy = body.querySelector('.lazy-load');
+  if (!lazy) { body.dataset.loaded = 'true'; return; }
+
+  // Abre o card automaticamente para o usuário ver o carregamento
+  if (body.classList.contains('collapsed')) {
+    body.classList.remove('collapsed');
+    const chev = document.getElementById('chev-' + cardId);
+    if (chev) chev.classList.add('open');
+  }
+
+  // Marca como carregado antes de chamar (evita disparo duplo)
+  body.dataset.loaded = 'true';
+
+  const tipo = lazy.getAttribute('data-load');
+  lazy.textContent = '⏳ Carregando...';
+  try {
+    if (tipo === 'tickets')     await carregarTickets(lazy);
+    if (tipo === 'historico')   await carregarHistoricoContrato(lazy);
+    if (tipo === 'negociacoes') await carregarNegociacoes(lazy);
+    if (tipo === 'histsz')      await carregarHistSZ(lazy);
+    if (tipo === 'produtos')    await carregarProdutos(lazy);
+    if (tipo === 'tvsva')       await carregarTVSVA(lazy);
+  } catch(e) {
+    console.error('Lazy load erro:', tipo, e);
+    if (lazy.parentElement) lazy.innerHTML = `❌ Erro: ${e.message}`;
+    body.dataset.loaded = 'false'; // permite tentar de novo
+  }
+}
+
+// ── Helpers ────────────────────────────────────
+function bc(v) {
+  if (!v) return 'cinza';
+  const s=(v||'').toLowerCase();
+  if (['ativo','online','finalizada','pago','quitado','disponível'].some(x=>s===x||s.startsWith(x+' '))) return 'verde';
+  if (['inativo','negativad','desistiu','suspenso','vencido','indisponível','loss','sem energia'].some(x=>s.includes(x))) return 'vermelho';
+  if (['pré','pendente','aberta','offline','análise','encaminhada','assumida','agendada','deslocamento','execução','aguard'].some(x=>s.includes(x))) return 'amarelo';
+  return 'cinza';
+}
+function bcSLA(s){const v=(s||'N').toString().toUpperCase();if(v==='N')return 'azul';if(v==='A')return 'vermelho';if(v==='C')return 'roxo';return 'cinza';}
+function slaLabel(s){const v=(s||'N').toString().toUpperCase();if(v==='N')return 'No prazo';if(v==='A')return 'Atrasado';if(v==='C')return 'Crítico';return 'SLA '+s;}
+// Legenda de cores das faturas (IXC): a receber em dia/hoje/vencido, recebido em dia/atraso, cancelado, renegociado
+function statusFatura(t){
+  const hoje = new Date(); hoje.setHours(0,0,0,0);
+  const venc = t.vencimento ? new Date((''+t.vencimento).slice(0,10)+'T00:00:00') : null;
+  const vencOk = venc && !isNaN(venc.getTime());
+  if (t.renegociado) return {label:'Renegociado', cor:'roxo'};
+  if (t.cancelado)   return {label:'Cancelado', cor:'cinza'};
+  if (t.status === 'A') {
+    if (vencOk) {
+      if (venc.getTime() === hoje.getTime()) return {label:'Vence hoje', cor:'amarelo'};
+      if (venc < hoje) return {label:'Vencido', cor:'vermelho'};
+    }
+    return {label:'A receber', cor:'azul'};
+  }
+  const baixa = t.data_baixa ? new Date((''+t.data_baixa).slice(0,10)+'T00:00:00') : null;
+  if (baixa && vencOk && !isNaN(baixa.getTime()) && baixa > venc) return {label:'Recebido em atraso', cor:'verde-esc'};
+  return {label:'Recebido', cor:'verde'};
+}
+function badge(v,cls){if(!v)return '';return `<span class="badge ${cls||bc(v)}">${v}</span>`;}
+function fmt(dt){if(!dt||dt.startsWith('0000')||dt===''||dt==='0000-00-00 00:00:00')return null;return dt.replace('T',' ').substring(0,16);}
+function row(k,v,cls){if(!v&&v!==0)return '';const val=cls?badge(v,cls):`<span class="row-val">${v}</span>`;return `<div class="row"><span class="row-key">${k}</span>${val}</div>`;}
+function mrow(k,v,cls){if(!v&&v!==0)return '';const val=cls?badge(v,cls):v;return `<div class="meta-row"><span class="meta-key">${k}</span><span class="meta-val">${val}</span></div>`;}
+function infoBox(t,txt,cls){if(!txt)return '';return `<div class="info-box ${cls||''}"><strong>${t}</strong>${txt}</div>`;}
+function secT(t){return `<div class="sec-title">${t}</div>`;}
+function fmtOLT(v,dec,unit){if(v==null)return '—';const n=parseFloat(v);if(isNaN(n))return '—';return n.toFixed(dec)+(unit||'');}
+// Faixas de sinal/temperatura — PADRÃO FIXO para todos (somente informativo, sem edição)
+const CFG_SINAL = { verde:-18, amarelo:-20, tempAmarelo:60, tempVermelho:75 };
+
+function sinalCls(v){
+  const s=parseFloat(v); if(isNaN(s))return 'cinza';
+  if(s>=CFG_SINAL.verde)  return 'verde';
+  if(s>=CFG_SINAL.amarelo)return 'amarelo';
+  return 'vermelho';
+}
+function tempCls(v){
+  const t=parseFloat(v); if(isNaN(t))return 'cinza';
+  if(t>CFG_SINAL.tempVermelho)return 'vermelho';
+  if(t>CFG_SINAL.tempAmarelo) return 'amarelo';
+  return 'verde';
+}
+
+// "Copiar tudo" = copia EXATAMENTE o que está na tela, agrupado por card/seção.
+// Puxa do DOM renderizado: assim respeita a visão do colaborador (cards escondidos
+// pela permissão têm .ixc-perm-hidden e são pulados) e nunca "esquece" um campo novo.
+// Senha: usa o valor real em data-pass (mesmo mascarada na tela).
+function _copiaLinhasDoCard(body) {
+  const out = [];
+  const SEL = '.item-header, .sec-title, .row, .meta-row, .olt-item, .olt-alarme, .olt-status-msg, .info-box';
+  body.querySelectorAll(SEL).forEach(function(n) {
+    if (n.classList.contains('ixc-perm-hidden')) return;
+    const clean = function(s){ return (s||'').replace(/\s+/g,' ').trim(); };
+    if (n.classList.contains('item-header')) {
+      const t = n.querySelector('.item-title'), s = n.querySelector('.item-sub');
+      const txt = clean((t?t.innerText:'') + (s?(' — '+s.innerText):''));
+      if (txt) { out.push(''); out.push('• ' + txt); }
+    } else if (n.classList.contains('sec-title')) {
+      const t = clean(n.innerText);
+      if (t) out.push('  [' + t + ']');
+    } else if (n.classList.contains('row') || n.classList.contains('meta-row')) {
+      const k = n.querySelector('.row-key,.meta-key');
+      const pd = n.querySelector('.pass-display');
+      const v = n.querySelector('.row-val,.meta-val');
+      const key = k ? clean(k.innerText) : '';
+      let val = pd ? (pd.getAttribute('data-pass') || pd.innerText) : (v ? v.innerText : '');
+      val = clean(val);
+      if (key && val) out.push('  ' + key + ': ' + val);
+      else { const t = clean(n.innerText); if (t) out.push('  ' + t); }
+    } else if (n.classList.contains('olt-item')) {
+      const k = n.querySelector('.olt-label'), v = n.querySelector('.olt-val');
+      if (k && v) out.push('  ' + clean(k.innerText) + ': ' + clean(v.innerText));
+    } else if (n.classList.contains('olt-alarme') || n.classList.contains('olt-status-msg') || n.classList.contains('info-box')) {
+      const t = clean(n.innerText);
+      if (t) out.push('  ' + t);
+    }
+  });
+  return out;
+}
+
+function copiarTudo() {
+  const d = dadosAtual;
+  const root = document.getElementById('results');
+  if (!d || !root) return;
+  const clean = function(s){ return (s||'').replace(/\s+/g,' ').trim(); };
+  const L = [];
+  L.push('==============================');
+  if (d.cliente && d.cliente.nome) L.push('Cliente: ' + d.cliente.nome);
+  if (d.contrato && (d.contrato.numero || d.contrato.id)) L.push('Contrato: #' + (d.contrato.numero || d.contrato.id));
+  L.push('==============================');
+
+  // Agrupa como no PWA: Aba → Card → Seção → Item. Rótulo da aba vem da própria barra de abas.
+  const ORDEM = ['geral','conexao','financas','atendimento','historicos','servicos'];
+  const rotuloAba = function(t){
+    const b = document.querySelector('.tab-btn[data-tab-target="'+t+'"]');
+    return b ? clean(b.innerText) : t;
+  };
+  const cards = Array.prototype.slice.call(root.querySelectorAll('.card'))
+    .filter(function(c){ return !c.classList.contains('ixc-perm-hidden'); });   // respeita permissão
+  const porAba = {};
+  cards.forEach(function(c){ const t = c.getAttribute('data-tab') || 'outros'; (porAba[t] = porAba[t] || []).push(c); });
+  const abas = ORDEM.filter(function(t){ return porAba[t]; })
+    .concat(Object.keys(porAba).filter(function(t){ return ORDEM.indexOf(t) < 0; }));
+
+  abas.forEach(function(t){
+    const blocos = [];
+    porAba[t].forEach(function(card){
+      const labelEl = card.querySelector('.card-label');
+      const body = card.querySelector('.card-body');
+      if (!labelEl || !body) return;
+      const linhas = _copiaLinhasDoCard(body);
+      if (!linhas.length) return;                                     // card vazio/não carregado
+      const bloco = ['', '----- ' + clean(labelEl.innerText) + ' -----'];
+      linhas.forEach(function(x){ bloco.push(x); });
+      blocos.push(bloco.join('\n'));
+    });
+    if (!blocos.length) return;                                       // aba sem conteúdo visível
+    L.push('');
+    L.push('═════ ' + rotuloAba(t).toUpperCase() + ' ═════');
+    blocos.forEach(function(b){ L.push(b); });
+  });
+
+  L.push('');
+  L.push('==============================');
+
+  navigator.clipboard.writeText(L.join('\n')).then(function() {
+    toast('Tudo copiado!', 'ok');
+  }).catch(function() {
+    toast('Erro ao copiar', 'err');
+  });
+}
+
+async function copiarSecao(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const linhas = [];
+  el.querySelectorAll('.meta-row,.row,.olt-item,.olt-alarme').forEach(r => {
+    const k = r.querySelector('.meta-key,.row-key,.olt-label');
+    const v = r.querySelector('.meta-val,.row-val,.olt-val');
+    if (k && v) linhas.push(k.innerText.trim() + ': ' + v.innerText.trim());
+    else linhas.push(r.innerText.trim());
+  });
+  const txt = linhas.filter(Boolean).join('\n') || el.innerText.trim();
+  try { await navigator.clipboard.writeText(txt); toast('Copiado!','ok'); }
+  catch(e) { toast('Erro ao copiar','err'); }
+};
+
+function secTCopy(titulo, copyId) {
+  return '<div class="sec-title">' + titulo + '</div>';
+}
+
+function toast(msg,tipo) {
+  const t=document.createElement('div');t.className='toast';
+  t.style.borderColor=tipo==='ok'?'#1a5c3a':tipo==='err'?'#5c1a1a':'var(--color-border-tertiary)';
+  t.textContent=msg; document.body.appendChild(t);
+  setTimeout(()=>t.remove(),3000);
+}
+
+// v1.7 — Tradução padronizada de erros para toast amigável
+function traduzirErro(err) {
+  if (!err) return 'Erro desconhecido';
+  const msg = err.message || String(err);
+  // Erros de rede do navegador
+  if (/Failed to fetch|NetworkError|ERR_INTERNET|ERR_NAME/i.test(msg))
+    return 'Sem conexão com o servidor. Verifique sua internet.';
+  if (/AbortError|timeout/i.test(msg))
+    return 'Servidor demorou demais. Tente novamente.';
+  // Categorias vindas do n8n
+  if (err.categoria === 'TIMEOUT') return 'IXC demorou para responder. Tente novamente.';
+  if (err.categoria === 'REDE')    return 'Falha de rede ao acessar IXC.';
+  if (err.categoria === 'IXC')     return 'IXC retornou erro: ' + (err.erro || msg);
+  // Fallback — devolve a mensagem do servidor se for compreensível
+  return msg.length < 200 ? msg : 'Erro ao processar. Tente novamente.';
+}
+
+// v1.7 — fetch com timeout configurável (usar em todas as chamadas)
+async function fetchComTimeout(url, opts = {}, timeoutMs = 30000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...opts, signal: ctrl.signal });
+    return res;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function confirmar(titulo,msg,onConfirm) {
+  const m=document.createElement('div'); m.className='confirm-modal';
+  m.innerHTML=`<div class="confirm-box"><h3>${titulo}</h3><p>${msg}</p>
+    <div class="confirm-btns">
+      <button class="btn-sm btn-gray" id="c-nao">Cancelar</button>
+      <button class="btn-sm btn-yellow" id="c-sim">Confirmar</button>
+    </div></div>`;
+  document.body.appendChild(m);
+  let executando = false;
+  const btnSim = m.querySelector('#c-sim');
+  const btnNao = m.querySelector('#c-nao');
+  btnNao.onclick = () => m.remove();
+  // v1.7 — bloqueio de duplo-clique com loading state
+  btnSim.onclick = async () => {
+    if (executando) return;
+    executando = true;
+    btnSim.disabled = true; btnNao.disabled = true;
+    btnSim.textContent = '⏳ Processando...';
+    try {
+      await onConfirm();
+    } finally {
+      m.remove();
+    }
+  };
+}
+
+// ── Ações ──────────────────────────────────────
+// ixcAction removida — todas as escritas passam pelo WEBHOOK_ACOES (n8n)
+// para evitar conflito de sessão com o painel IXC da atendente
+
+
+
+async function ixcGet(endpoint, filtro) {
+  const res = await fetch(WEBHOOK_LEITURAS, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ endpoint, filtro, token: sessaoAtual?.token })
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status} em ${endpoint}`);
+  return await res.json();
+}
+
+window.abrirLink = url => {
+  if (typeof chrome!=='undefined'&&chrome.tabs) chrome.tabs.create({url});
+  else window.open(url,'_blank');
+};
+window.abrirRoteador = (ip,porta) => abrirLink(`http://${ip}:${porta||'8080'}/`);
+window.abrirWhatsApp = num => {
+  const n=num.replace(/\D/g,'');
+  abrirLink(`https://wa.me/${n.startsWith('55')?n:'55'+n}`);
+};
+window.copiarPIX = async (pix) => {
+  try { await navigator.clipboard.writeText(pix); toast('PIX copiado!','ok'); }
+  catch(e) { toast('Erro ao copiar PIX','err'); }
+};
+
+window.selecionarContrato = async function(id) {
+  elInput.value=id; elLast.textContent='#'+id;
+  setState('loading'); elBtn.disabled=true;
+  try { await buscarContrato(id); }
+  catch(e) { elErrMsg.textContent='Falha ao carregar contrato.'; setState('error'); }
+  finally { elBtn.disabled=false; }
+};
+
+window.desbloquearConfianca = function(contrato_id, desbloq) {
+  if (desbloq==='Indisponível') {
+    const motivo = dadosAtual?.contrato?.desbloqueio_motivo;
+    toast(motivo || 'Desbloqueio indisponível para este contrato','err');
+    return;
+  }
+  confirmar('Desbloqueio de confiança',
+    `Confirma o desbloqueio de confiança para o contrato #${contrato_id}?`,
+    async () => {
+      try {
+        toast('Processando...','');
+        const result = await fetch(WEBHOOK_ACOES, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ acao: 'desbloqueio', usar_token_master: usarTokenMaster(), contrato_id: String(contrato_id), token: sessaoAtual?.token })
+        }).then(r => r.json());
+        // Verificar se o IXC realmente confirmou o desbloqueio
+        // O IXC retorna: {type:'success',...} ou {type:'error',...} ou {msg:'...',tipo:'sucesso'/'erro'}
+        const tipo = result?.type || result?.tipo || '';
+        const msg  = result?.message || result?.msg || result?.mensagem || '';
+        const ok   = tipo === 'success' || tipo === 'sucesso'
+                  || result?.retorno === 'S'
+                  || result?.sucesso === true
+                  || (msg && !tipo && !msg.toLowerCase().includes('erro') && !msg.toLowerCase().includes('error'));
+
+        if (ok) {
+          await Logger.registrarLog(sessaoAtual,'DESBLOQUEIO_CONFIANCA',{
+            contrato_id,
+            cliente_nome: dadosAtual?.cliente?.nome,
+            cliente_id:   dadosAtual?.cliente?.id,
+            sucesso: true,
+            detalhes: { resultado: msg||tipo, plano: dadosAtual?.contrato?.plano }
+          });
+          toast(msg || 'Desbloqueio realizado com sucesso!','ok');
+          invalidarCache(contrato_id); setTimeout(()=>buscarContrato(contrato_id, true),2000);
+        } else {
+          const errMsg = msg || tipo || 'Desbloqueio não foi aplicado pelo IXC.';
+          await Logger.registrarLog(sessaoAtual,'DESBLOQUEIO_CONFIANCA',{
+            contrato_id,
+            cliente_nome: dadosAtual?.cliente?.nome,
+            cliente_id:   dadosAtual?.cliente?.id,
+            sucesso: false,
+            detalhes: { erro: errMsg, retorno_raw: JSON.stringify(result) }
+          });
+          toast('❌ ' + errMsg,'err');
+        }
+      } catch(e) {
+        await Logger.registrarLog(sessaoAtual,'DESBLOQUEIO_CONFIANCA',{contrato_id,sucesso:false,erro:e.message});
+        toast('Erro ao realizar desbloqueio','err');
+      }
+    }
+  );
+};
+
+window.rebootONU = function(eq_id, login, contrato_id) {
+  confirmar('Reboot ONU', `Confirma o reinício da ONU do login "${login}"?`,
+    async () => {
+      try {
+        toast('Enviando comando de reinício...', '');
+        const oltSessao = await new Promise(r => chrome.storage.local.get(['olt_sessao'], d => r(d.olt_sessao || null)));
+        if (!oltSessao) { toast('OLT Cloud não configurado', 'err'); return; }
+
+        // Refresh do token
+        let token = '';
+        try {
+          const rr = await fetch('https://carajas.oltcloud.co/api/token/refresh', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ refresh: oltSessao.refresh })
+          });
+          if (rr.ok) { const rd = await rr.json(); token = rd?.access || ''; }
+        } catch(e) {}
+        if (!token) token = oltSessao.access || '';
+        if (!token) { toast('Token OLT expirado — reconfigure', 'err'); return; }
+
+        const url = `https://carajas.oltcloud.co/api/v2/ftth/equipment/restart/${eq_id}`;
+const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+        });
+
+        let ok = res.ok, msg = '';
+        try {
+          const d = await res.json();
+          ok = ok || d?.return === true || d?.success === true;
+          msg = d?.message || d?.detail || '';
+        } catch(e) {}
+
+        if (ok) {
+          toast('Reinício enviado! ONU vai reiniciar em instantes.', 'ok');
+          await Logger.registrarLog(sessaoAtual, 'REBOOT_ONU', { contrato_id, detalhes: { eq_id, login }, sucesso: true });
+        } else {
+          toast('Falha: ' + (msg || `HTTP ${res.status}`), 'err');
+        }
+      } catch(e) {
+        toast(traduzirErro(e), 'err');
+      }
+    }
+  );
+}
+
+window.desconectarLogin = function(login_id,login,contrato_id) {
+  confirmar('Desconectar login',`Confirma a desconexão do login "${login}"?`,
+    async () => {
+      // v1.7.7 — feedback imediato
+      toast('⚡ Desconectando...','');
+      try {
+        const res = await fetch(WEBHOOK_ACOES, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ acao: 'desconectar', usar_token_master: usarTokenMaster(), login_id: String(login_id), token: sessaoAtual?.token })
+        }).then(r => r.json());
+
+        // Log em PARALELO (fire-and-forget) — não bloqueia o usuário
+        Logger.registrarLog(sessaoAtual,'DESCONEXAO_LOGIN',{
+          contrato_id,
+          cliente_nome: dadosAtual?.cliente?.nome,
+          cliente_id:   dadosAtual?.cliente?.id,
+          sucesso: res?.ok !== false,
+          detalhes: { login_id, login, resultado: res?.mensagem||'Desconectado' }
+        }).catch(() => {/* ignora — não atrapalha UX */});
+
+        if (res?.ok === false) {
+          toast('❌ ' + (res?.mensagem || res?.erro || 'Falha ao desconectar'),'err');
+          return;
+        }
+        toast('✓ ' + (res?.mensagem||'Login desconectado!'),'ok');
+        // v1.7.7 — reduzido de 2000→700ms (Mikrotik leva ~500ms pra atualizar o status)
+        invalidarCache(contrato_id); setTimeout(()=>buscarContrato(contrato_id, true), 700);
+      } catch(e) {
+        toast('Erro ao desconectar: ' + traduzirErro(e), 'err');
+      }
+    }
+  );
+};
+
+// ── Card e Item builders ───────────────────────
+// v1.7.5 — Mapeamento de cards para abas
+const CARD_TAB = {
+  'contrato':         'geral',
+  'cliente':          'geral',
+  'logins':           'conexao',
+  'fin-ajustes':      'financas',
+  'fin':              'financas',
+  'os-ab':            'atendimento',
+  'os-en':            'atendimento',
+  'tickets':          'atendimento',
+  'hist-contrato':    'historicos',
+  'negociacoes':      'historicos',
+  'histsz':           'sz',
+  'comodatos':        'servicos',
+  'produtos-contrato':'servicos',
+  'tv-sva':           'servicos'
+};
+
+function card(id,label,badges,html,open) {
+  const bHtml=(badges||[]).map(([v,c])=>badge(v,c||bc(v))).join(' ');
+  const tab = CARD_TAB[id] || 'geral';
+  return `<div class="card" data-tab="${tab}">
+    <div class="card-header" data-toggle="${id}">
+      <span class="card-label">${label}</span>
+      <span class="card-status">${bHtml}</span>
+      <span class="chevron ${open?'open':''}" id="chev-${id}">▼</span>
+    </div>
+    <div class="card-body ${open?'':'collapsed'}" id="body-${id}">${html}</div>
+  </div>`;
+}
+
+function item(id,titleHtml,bodyHtml,open,extraBadge,loginIdx) {
+  const bodyId = loginIdx!==undefined?`body-login-${loginIdx}`:`body-${id}`;
+  return `<div class="item">
+    <div class="item-header" data-toggle="${id}">${titleHtml}${extraBadge||''}
+      <span class="chevron ${open?'open':''}" id="chev-${id}">▼</span>
+    </div>
+    <div class="item-body ${open?'':'collapsed'}" id="${bodyId}" data-item-id="body-${id}">${bodyHtml}</div>
+  </div>`;
+}
+
+// ── Render seleção CPF ─────────────────────────
+function renderSelecao(contratos) {
+  if (!contratos || !Array.isArray(contratos)) { setState('error'); document.getElementById('error-msg').textContent='Nenhum contrato encontrado.'; return; }
+  elRes.innerHTML='';
+  const clientes={};
+  contratos.forEach(c=>{
+    const cid=c.cliente.id;
+    if (!clientes[cid]) clientes[cid]={info:c.cliente,contratos:[]};
+    clientes[cid].contratos.push(c);
+  });
+
+  let html='';
+  Object.values(clientes).forEach(cli=>{
+    let cliHtml=`<div class="cli-info">
+      <span class="cli-nome">${cli.info.nome}</span>
+      <span class="cli-cpf">${cli.info.cpf}</span>
+      ${cli.info.celular?`<button class="btn-sm btn-green" style="margin-left:auto" data-action="whatsapp" data-p="${cli.info.celular}">💬</button>`:''}
+    </div>`;
+
+    cli.contratos.forEach(c=>{
+      const onlineB = c.login?badge(c.login.online,bc(c.login.online)):'';
+      const statusB = badge(c.status,bc(c.status));
+      let alertaOS='';
+      if (c.em_manutencao&&c.os_do_login?.length>0) {
+        alertaOS=`<div class="alerta-manutencao"><strong>⚠ LOGIN EM ÁREA DE MANUTENÇÃO</strong>
+          <div><div style="font-weight:700;margin-bottom:2px">OS do login em manutenção:</div>
+          ${c.os_do_login.map(o=>`<div style="margin-top:3px"><span style="font-weight:600">#${o.id} — ${o.assunto}</span>
+            ${o.mensagem?`<div style="opacity:.85;margin-top:2px">${o.mensagem.substring(0,160)}</div>`:''}</div>`).join('')}
+          </div></div>`;
+      } else if (c.em_manutencao&&c.os_abertas_qtd>0) {
+        alertaOS=`<div class="alerta-os"><span class="alerta-os-icon">⚠</span>
+          <div>${c.os_abertas_qtd} OS aberta(s)${c.os_resumo?.length?' : '+c.os_resumo.join(' · '):''}</div></div>`;
+      }
+      cliHtml+=`<div class="contrato-card ${c.em_manutencao?'card-alerta':''}" data-contrato-id="${c.contrato_id}">
+        <div class="contrato-top"><span class="contrato-id">#${c.numero}</span>${statusB} ${onlineB}${c.em_manutencao?'<span class="badge vermelho" style="margin-left:auto">⚠ EM MANUTENÇÃO</span>':''}</div>
+        <div class="contrato-plano">${c.plano||'—'}</div>${alertaOS}
+        <div class="contrato-meta">
+          ${c.endereco?`<span>📍 ${c.endereco}</span>`:''}
+          ${c.mensalidade?`<span>R$ ${c.mensalidade}</span>`:''}
+          ${c.login?.login?`<span>👤 ${c.login.login}</span>`:''}
+          ${c.login?.ip?`<span>🌐 ${c.login.ip}</span>`:''}
+        </div>
+        <div class="contrato-hint">Clique para ver detalhes →</div>
+      </div>`;
+    });
+    html+=`<div class="cli-block">${cliHtml}</div>`;
+  });
+  elRes.innerHTML=html;
+  setState('result');
+}
+
+// ── Render principal ───────────────────────────
+function render(d) {
+  dadosAtual = d;
+  elRes.innerHTML='';
+  const c=d.contrato, cl=d.cliente, fin=d.financeiro;
+  // Salvar no histórico (protegido contra erro)
+  try {
+    salvarNoHistorico(c.numero||c.id, cl.nome, c.status_acesso||c.status).then(()=>{
+      carregarHistoricoConsultas().then(renderHistorico);
+    });
+  } catch(e) {}
+
+  // ── Barra cliente ativo no topo ──
+  const barCli = document.getElementById('cliente-ativo');
+  if (barCli) {
+    const stAcesso = c.status_acesso || c.status;
+    const stCls = bc(stAcesso);
+    barCli.style.display = 'flex';
+    barCli.innerHTML = `
+      <span class="cli-ativo-nome">👤 ${cl.nome}</span>
+      <span class="cli-ativo-num">#${c.numero}</span>
+      <span class="cli-ativo-status ${stCls}">${stAcesso}</span>
+    `;
+  }
+
+  // ── CONTRATO ──
+  // Status de bloqueio do acesso
+  const bloqueado = c.status_acesso && !['Ativo','Disponível'].includes(c.status_acesso);
+  const desbDisp  = c.desbloqueio_conf === 'Disponível';
+  const desbAtivo = c.desbloqueio_conf_ativo === 'S'; // já em uso
+  // Contrato encerrado (inativo/desistiu/negativado) — sem desbloqueio; mostra data de encerramento
+  const encerrado = ['I','D','N'].includes(c.status_raw);
+
+  // Cadeado: estado visual
+  let cadeadoCls, cadeadoIcon, cadeadoTip;
+  if (!bloqueado) {
+    cadeadoCls='cadeado-aberto'; cadeadoIcon='🔓'; cadeadoTip='Acesso liberado';
+  } else if (desbDisp) {
+    cadeadoCls='cadeado-disponivel'; cadeadoIcon='🔒'; cadeadoTip='Bloqueado — desbloqueio disponível. Clique para desbloquear';
+  } else {
+    cadeadoCls='cadeado-bloqueado'; cadeadoIcon='🔒';
+    cadeadoTip='Bloqueado — desbloqueio indisponível' + (c.desbloqueio_motivo ? ': ' + c.desbloqueio_motivo : '');
+  }
+
+  // Botão único de copiar tudo — no início dos resultados
+  elRes.innerHTML = `<button class="btn-copiar-tudo" id="btn-copiar-tudo" data-action="copiar-tudo">
+    ⎘ Copiar tudo
+  </button>`;
+
+  // v1.7.5 — Barra de abas
+  elRes.innerHTML += `<div class="tabs-bar" id="tabs-bar">
+    <button class="tab-btn active" data-tab-target="geral">🏠 Geral</button>
+    <button class="tab-btn" data-tab-target="conexao">🔌 Conexão</button>
+    <button class="tab-btn" data-tab-target="financas">💰 Finanças</button>
+    <button class="tab-btn" data-tab-target="atendimento">🛠 Atendimento</button>
+    <button class="tab-btn" data-tab-target="historicos">📜 Históricos</button>
+    <button class="tab-btn" data-tab-target="servicos">📦 Serviços</button>
+    <button class="tab-btn" data-tab-target="sz">💬 SZ Chat</button>
+  </div>`;
+
+  let cHtml='';
+
+  // Faixa de bloqueio — destaque máximo
+  if (bloqueado) {
+    const isCM = (c.status_acesso||'').includes('Manual');
+    const isCA = (c.status_acesso||'').includes('Automático') || (c.status_acesso||'').includes('Atraso');
+    const corFaixa = isCM ? 'faixa-bloqueio-manual' : 'faixa-bloqueio-auto';
+    cHtml += `<div class="faixa-bloqueio ${corFaixa}">
+      <span class="faixa-icon">${isCM?'🔒':'⛔'}</span>
+      <span class="faixa-txt">${c.status_acesso.toUpperCase()}</span>
+      <span class="faixa-icon">${isCM?'🔒':'⛔'}</span>
+    </div>`;
+  }
+
+  // Barra de status + cadeado
+  cHtml += `<div class="contrato-status-bar">
+    <div class="status-bar-info">
+      <span class="status-bar-item ${bc(c.status)}">${c.status}</span>
+      ${c.status_acesso&&c.status_acesso!==c.status?`<span class="status-bar-item ${bc(c.status_acesso)}">${c.status_acesso}</span>`:''}
+      ${desbAtivo&&!encerrado?'<span class="status-bar-item amarelo">🕐 Desbloqueio ativo</span>':''}
+    </div>
+    ${encerrado ? '' : `<button class="cadeado-btn ${cadeadoCls}" data-action="desbloquear" data-p="${c.id}" data-p2="${c.desbloqueio_conf}" title="${cadeadoTip}">
+      <span class="cadeado-icon">${cadeadoIcon}</span>
+      <span class="cadeado-label">${bloqueado?(desbDisp?'Desbloquear':'Bloqueado'):'Liberado'}</span>
+    </button>`}
+  </div>`;
+
+  // Alertas no topo
+  if (fin?.titulos_vencidos>0) cHtml+=`<div class="alerta-financeiro">
+    <div class="af-titulo">⚠ Financeiro em atraso</div>
+    <div class="af-detalhe">${fin.titulos_vencidos} título(s) vencido(s) — verifique antes de desbloquear</div>
+  </div>`;
+  if (c.motivo_restricao) cHtml += infoBox('⚠ Restrição de acesso',c.motivo_restricao,'warn');
+
+  cHtml += '<div id="copy-contrato">';
+  cHtml += row('Nº contrato', c.numero);
+  cHtml += row('Plano', c.plano);
+  cHtml += row('Velocidade', c.velocidade);
+  cHtml += row('Vencimento', c.vencimento);
+  cHtml += row('Mensalidade', c.mensalidade?'R$ '+c.mensalidade:null);
+  cHtml += row('Pago até', fmt(c.pago_ate));
+  cHtml += row('Ativação', fmt(c.data_ativacao));
+  cHtml += row('Última renovação', fmt(c.data_renovacao));
+  cHtml += row('Expiração', fmt(c.data_expiracao));
+  cHtml += row('Fidelidade', c.fidelidade?c.fidelidade+' meses':null);
+  // Datas de encerramento (quando houver)
+  cHtml += row('Cancelamento', fmt(c.data_cancelamento), 'vermelho');
+  cHtml += row('Desistência', fmt(c.data_desistencia), 'vermelho');
+  cHtml += row('Negativação', fmt(c.data_negativacao), 'vermelho');
+  cHtml += row('Desativação', fmt(c.data_desativacao));
+  // Desbloqueio só faz sentido em contrato não encerrado
+  if (!encerrado) cHtml += row('Desbl. conf.', c.desbloqueio_conf, bc(c.desbloqueio_conf));
+  cHtml += '</div>';
+
+  if (c.obs) cHtml += infoBox('Observação',c.obs);
+
+  // Link de assinatura digital (quando disponível)
+  if (c.url_assinatura) {
+    cHtml += `<div class="btns" style="margin-top:8px">
+      <button class="btn-sm btn-gray" data-action="pix" data-p="${c.url_assinatura}" title="Copiar link de assinatura digital">📋 Copiar link de assinatura digital</button>
+    </div>`;
+  }
+
+  // v1.7.7 — Indicador discreto da versão do workflow que respondeu (debug)
+  if (d._workflow_version) {
+    cHtml += `<div style="text-align:right;font-size:9px;color:var(--tx3);margin-top:4px;font-family:var(--font-mono);opacity:.5">⚙ workflow v${d._workflow_version}</div>`;
+  } else {
+    cHtml += `<div style="text-align:right;font-size:9px;color:var(--y);margin-top:4px;font-family:var(--font-mono)">⚠ workflow antigo (sem versão)</div>`;
+  }
+
+  elRes.innerHTML += card('contrato','Contrato #'+c.id, [], cHtml, true); // sempre aberto
+
+  // ── CLIENTE ──
+  let clHtml='';
+  clHtml += '<div id="copy-cliente">';
+  clHtml += row('Nome', cl.nome);
+  clHtml += row('CPF/CNPJ', cl.cpf_cnpj);
+  clHtml += row('Telefone', cl.telefone);
+  clHtml += row('Celular', cl.celular);
+  clHtml += row('WhatsApp', cl.whatsapp);
+  clHtml += row('E-mail', cl.email);
+  clHtml += row('Endereço', cl.endereco);
+  clHtml += row('CEP', cl.cep);
+  clHtml += row('Referência', cl.referencia);
+  clHtml += '</div>';
+
+  const wa=cl.whatsapp||cl.celular;
+
+  elRes.innerHTML += card('cliente','Cliente — '+cl.nome, [], clHtml, true);
+
+  // ── LOGINS ──
+  let logHtml = d.logins.length===0?'<div class="empty">Nenhum login</div>':'';
+  d.logins.forEach((l,i)=>{
+    let body='';
+    body += secT('Status do acesso');
+    body += mrow('Status', l.status_acesso, bc(l.status_acesso));
+    body += mrow('Online', l.online, bc(l.online));
+
+    if (l.em_os_manutencao&&l.os_do_login?.length>0) {
+      body+=`<div class="alerta-manutencao" style="margin:6px 0"><strong>⚠ LOGIN EM ÁREA DE MANUTENÇÃO</strong></div>`;
+      l.os_do_login.forEach(o=>{
+        body+=`<div class="alerta" style="margin:4px 0">
+          <strong>#${o.id} — ${o.assunto} ${badge(o.status,'amarelo')} ${o.tipo?badge(o.tipo,'azul'):''}</strong>
+          <div style="font-size:10px;opacity:.7;margin:3px 0">${o.abertura?'Aberta: '+fmt(o.abertura):''}${o.previsao?' | Prev: '+fmt(o.previsao):''}${o.tecnico?' | '+o.tecnico:''}</div>
+          ${o.mensagem?infoBox('Descrição',o.mensagem):''}
+          ${o.mensagem_resposta?infoBox('Atualização',o.mensagem_resposta,'resp'):''}
+          <div class="btns"><button class="btn-sm btn-blue" data-action="link" data-p="${o.link_ixc}">🔗 Abrir OS</button></div>
+        </div>`;
+      });
+    }
+
+    body += mrow('Conexão', l.conexao);
+
+    // v1.9.2 — Senha PPPoE (mascarada, com revelar/copiar)
+    const _senhaPPPoE = l.senha || l.password || '';
+    if (_senhaPPPoE) {
+      const _esc = String(_senhaPPPoE).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+      body += `<div class="meta-row">
+        <span class="meta-key">Senha</span>
+        <span class="meta-val" style="display:flex;align-items:center;gap:6px;justify-content:flex-end">
+          <span class="pass-display" data-pass="${_esc}" style="font-family:var(--font-mono);letter-spacing:.5px">••••••••</span>
+          <button data-action="toggle-pppoe-pass" title="Mostrar/ocultar senha" style="background:transparent;border:none;color:var(--acc);cursor:pointer;font-size:13px;padding:0 2px;line-height:1">👁</button>
+          <button data-action="pix" data-p="${_esc}" title="Copiar senha" style="background:transparent;border:none;color:var(--acc);cursor:pointer;font-size:12px;padding:0 2px;line-height:1">📋</button>
+        </span>
+      </div>`;
+    }
+
+    body += `<div id="copy-rede-${i}">`;
+    body += secT('Rede');
+    body += mrow('IP', l.ip);
+    body += mrow('MAC cliente', l.mac);
+    body += mrow('ONU MAC', l.onu_mac);
+    body += mrow('Tipo conexão', l.tipo_conexao);
+    body += mrow('MTU', l.mtu);
+    body += mrow('Concentrador', l.concentrador);
+    body += secT('Fibra FTTH');
+    body += mrow('Caixa FTTH', l.caixa_ftth);
+    body += mrow('Porta', l.ftth_porta);
+    body += mrow('Splitter', l.splitter);
+    body += mrow('Transmissor', l.id_transmissor);
+    if (l.historico_fibra?.length>0) {
+      body+=secT('Histórico sinal fibra');
+      l.historico_fibra.forEach(h=>{ body+=`<div class="meta-row"><span class="meta-key">${fmt(h.data)||'—'}</span><span class="meta-val">ONU: ${h.potencia_onu||'—'} | OLT: ${h.potencia_olt||'—'}</span></div>`; });
+    }
+    body += secT('Histórico de conexão');
+    body += mrow('Última conexão', fmt(l.ultima_conexao));
+    body += mrow('Última descon.', fmt(l.ultima_desconexao));
+    body += mrow('Tempo conectado', l.tempo_conectado);
+    body += mrow('Desconexões', l.count_desconexao);
+    body += mrow('Motivo descon.', l.motivo_desconexao);
+    body += secT('Consumo');
+    body += mrow('Download', l.download_atual);
+    body += mrow('Upload', l.upload_atual);
+    body += mrow('Franquia', l.franquia_consumo);
+    body += '</div>';
+
+    // OZmap placeholder (rede física) — entre os dados do IXC e o OLT — preenchido por buscarOZmap()
+    body+=`<div class="ozmap-section" id="ozmap-${i}" style="margin-top:6px"><div class="sec-title">Rede (OZmap)</div><div class="olt-status-msg cinza">⏳ Carregando rede...</div></div>`;
+
+    // OLT Cloud placeholder
+    body+=`<div class="olt-section"><div class="sec-title">OLT Cloud — Sinal em tempo real</div><div class="olt-status-msg cinza">⏳ Carregando dados da OLT...</div></div>`;
+
+    body+=`<div class="btns">
+      ${l.link_roteador?`<button class="btn-sm btn-blue" data-action="roteador" data-p="${l.ip}" data-p2="${l.porta_http}">🌐 Roteador</button>`:''}
+      <span id="btn-reboot-${i}"></span>
+      <button class="btn-sm btn-red" data-action="desconectar" data-p="${l.id}" data-p2="${l.login}" data-p3="${c.id}">⚡ Desconectar</button>
+    </div>`;
+
+    const emOS=l.em_os_manutencao?`<span class="os-em-os">EM OS</span> `:'';
+    const extraB=emOS+badge(l.status_acesso,bc(l.status_acesso))+' '+badge(l.online,bc(l.online));
+    logHtml+=item(`login-${i}`,`<span class="item-title">${l.login}</span>`,body,true,extraB,i);
+  });
+  elRes.innerHTML += card('logins',`Logins PPPoE (${d.logins.length})`, [], logHtml, true);
+
+  // ── ACRÉSCIMOS E DESCONTOS DO CONTRATO (aba Finanças) ──
+  if (d.descontos?.length || d.acrescimos?.length) {
+    let ajHtml = '';
+    (d.acrescimos||[]).forEach(x => {
+      const det = [x.descricao, x.validade?('até '+x.validade):null].filter(Boolean).join(' · ');
+      ajHtml += mrow('Acréscimo', '+ R$ '+(x.valor||'—')+(x.percentual&&Number(x.percentual)>0?' ('+x.percentual+'%)':'')+(det?' — '+det:''), 'amarelo');
+    });
+    (d.descontos||[]).forEach(x => {
+      const det = [x.descricao, x.validade?('até '+x.validade):null].filter(Boolean).join(' · ');
+      ajHtml += mrow('Desconto', '− R$ '+(x.valor||'—')+(x.percentual&&Number(x.percentual)>0?' ('+x.percentual+'%)':'')+(det?' — '+det:''), 'verde');
+    });
+    const nAj = (d.acrescimos?.length||0)+(d.descontos?.length||0);
+    elRes.innerHTML += card('fin-ajustes','Acréscimos e descontos', [[nAj+' item(ns)','amarelo']], ajHtml, true);
+  }
+
+  // ── FINANCEIRO ──
+  if (fin?.titulos?.length>0) {
+    const SF={A:'Em aberto',C:'Pago',B:'Baixado',P:'Pago parcial'};
+    const fB=fin.titulos_vencidos>0?[[fin.titulos_vencidos+' vencido(s)','vermelho']]:fin.titulos_abertos>0?[[fin.titulos_abertos+' aberto(s)','amarelo']]:[['Em dia','verde']];
+    let finHtml='<div id="fin-loading" style="text-align:center;padding:10px;color:var(--acc);font-size:11px">⏳ Carregando boletos e PIX...</div>';
+    elRes.innerHTML += card('fin','Financeiro', fB, finHtml, fin.titulos_vencidos>0);
+
+    // Carregar boletos+PIX em background via n8n
+    if (d.cliente?.id) {
+      fetch(WEBHOOK_ACOES, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ acao:'titulos_abertos', cliente_id:String(d.cliente.id), contrato_id:String(d.contrato?.id||d.contrato_id||''), token:sessaoAtual?.token })
+      }).then(r=>r.json()).then(res=>{
+        const loadEl = document.getElementById('fin-loading');
+        if (!loadEl) return;
+        // v1.7.7 — se webhook retornou vazio/erro, manter os títulos do lookup original (não sobrescrever com [])
+        const titulosWebhook = Array.isArray(res?.titulos) ? res.titulos : null;
+        const titulos = (titulosWebhook && titulosWebhook.length > 0) ? titulosWebhook : (fin.titulos || []);
+        let finHtml2='';
+        // Separar abertos e pagos
+        const abertos = titulos.filter(t => t.status === 'A');
+        const pagos   = titulos.filter(t => t.status !== 'A').slice(0, 5); // 5 pagos mais recentes (lista já vem DESC)
+        const ordenados = [...abertos, ...pagos];
+
+        if (ordenados.length === 0) {
+          loadEl.outerHTML = '<div class="empty">Nenhum título encontrado</div>';
+          return;
+        }
+
+        ordenados.forEach((t,i)=>{
+          const sf = statusFatura(t);
+          let tBody = mrow('Vencimento',t.vencimento)
+                    + mrow('Valor','R$ '+(t.valor||t.valor_aberto||'—'))
+                    + mrow('Status', sf.label, sf.cor)
+                    + mrow('Origem', t.tipo_contrato==='avulso'?'Avulso':'Recorrente');
+
+          // Desconto / acréscimo (juros+multa) + descrição — quando houver
+          if (t.desconto)  tBody += mrow('Desconto', '− R$ '+t.desconto + (t.desconto_validade?' (válido até '+t.desconto_validade+')':''), 'verde');
+          if (t.acrescimo) tBody += mrow('Acréscimo', '+ R$ '+t.acrescimo + (t.juros&&t.multa?' (juros + multa)':t.juros?' (juros)':' (multa)'), 'amarelo');
+          if (t.valor_total) tBody += mrow('Valor total', 'R$ '+t.valor_total);
+          if ((t.desconto||t.acrescimo) && t.obs) tBody += mrow('Descrição', t.obs);
+
+          // PIX — mostrar sempre que tiver qr_code ou copia e cola
+          const temPix = t.pix_copia_cola || t.qr_code;
+          if (temPix) {
+            let pixHtml = '<div class="pix-box"><div class="pix-label">⚡ PIX</div>';
+            if (t.qr_code) pixHtml += '<img src="data:image/png;base64,' + t.qr_code + '" class="pix-qr">';
+            if (t.pix_copia_cola) {
+              pixHtml += '<div class="pix-code">' + t.pix_copia_cola + '</div>';
+              pixHtml += '<button class="btn-sm btn-green" data-action="pix" data-p="' + t.pix_copia_cola + '">⚡ Copiar PIX</button>';
+            } else {
+              pixHtml += '<div style="font-size:10px;color:var(--tx3);margin-top:4px">PIX copia e cola indisponível nesta carteira</div>';
+            }
+            pixHtml += '</div>';
+            tBody += pixHtml;
+          }
+
+          // Linha digitável
+          if (t.linha_digitavel) {
+            tBody += `<div style="margin:6px 0;padding:6px 8px;background:var(--bg3);border-radius:6px;border:1px solid var(--b)">
+              <div style="font-size:9px;color:var(--tx3);font-family:var(--font-head);text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px">Linha digitável</div>
+              <div style="font-family:var(--font-mono);font-size:10px;color:var(--tx);word-break:break-all;line-height:1.5">${t.linha_digitavel}</div>
+              <button class="btn-sm btn-gray" style="margin-top:6px" data-action="pix" data-p="${t.linha_digitavel}">📋 Copiar linha dig.</button>
+            </div>`;
+          }
+
+          // Boleto — Demanda 1: quando NÃO comunicado ao banco, geração é opcional (botão)
+          const emailBtn = '<button class="btn-sm btn-gray" data-action="enviar-boleto-email" data-p="' + t.id + '" data-p2="' + (d.cliente?.email||'') + '">✉ Enviar por e-mail</button>';
+          if (t.status==='A' && t.comunicado_banco === false) {
+            tBody += '<div class="boleto-aviso"><span class="ba-ic">⚠</span><span>Boleto ainda não comunicado ao banco — geração opcional</span></div>'
+              + '<div class="btns" id="boleto-btns-' + t.id + '">'
+              + '<button class="btn-sm btn-gray" data-action="boleto" data-p="' + t.id + '">📄 Gerar dados do boleto</button>'
+              + '</div>';
+          } else if (t.boleto_base64) {
+            const blobUrl  = 'data:application/pdf;base64,' + t.boleto_base64;
+            const fileName = 'boleto_' + (t.documento||t.id) + '.pdf';
+            tBody += '<div class="btns" id="boleto-btns-' + t.id + '">'
+              + '<a class="btn-sm btn-blue" href="' + blobUrl + '" download="' + fileName + '">📄 Baixar boleto PDF</a>'
+              + emailBtn
+              + '</div>';
+          } else if (t.status==='A' && !temPix && !t.linha_digitavel) {
+            tBody += '<div class="btns" id="boleto-btns-' + t.id + '">'
+              + '<button class="btn-sm btn-gray" data-action="boleto" data-p="' + t.id + '">🔄 Tentar gerar boleto</button>'
+              + emailBtn
+              + '</div>';
+          } else if (t.status==='A') {
+            tBody += '<div class="btns" id="boleto-btns-' + t.id + '">'
+              + emailBtn
+              + '</div>';
+          }
+
+          const expandir = t.status==='A'; // abertos sempre expandidos
+          const avulsoBadge = t.tipo_contrato==='avulso' ? ' '+badge('Avulso','cinza') : '';
+          finHtml2+=item(`fin-${i}`,
+            `<span class="item-title">R$ ${t.valor||'—'}</span><span class="item-sub">${t.vencimento||'—'} · ${sf.label}</span>`,
+            tBody, expandir,
+            badge(sf.label, sf.cor) + avulsoBadge);
+        });
+        loadEl.parentElement.innerHTML = finHtml2 || '<div class="empty">Sem títulos</div>';
+      }).catch(()=>{
+        // Fallback: exibir sem boleto/PIX
+        const loadEl = document.getElementById('fin-loading');
+        if (loadEl) {
+          let finHtml2='';
+          fin.titulos.forEach((t,i)=>{
+            const vencido = t.status==='A'&&new Date(t.vencimento)<new Date();
+            const sl=SF[t.status]||(vencido?'Vencido':'—');
+            let tBody=mrow('Vencimento',t.vencimento)+mrow('Valor','R$ '+t.valor);
+            tBody+=`<div class="btns"><button class="btn-sm btn-blue" data-action="boleto" data-p="${t.id}">📄 Ver boleto/PIX</button></div>`;
+            finHtml2+=item(`fin-${i}`,`<span class="item-title">R$ ${t.valor}</span><span class="item-sub">${t.vencimento||'—'}</span>`,tBody,false,badge(vencido?'Vencido':sl,vencido?'vermelho':bc(sl)));
+          });
+          loadEl.parentElement.innerHTML=finHtml2;
+        }
+      }).catch(err => {
+        // v1.7.7 — Se webhook caiu, renderiza com dados do lookup (sem boleto/PIX) em vez de mostrar "carregando" pra sempre
+        console.warn('[FIN] Erro ao enriquecer títulos:', err);
+        const loadEl = document.getElementById('fin-loading');
+        if (!loadEl) return;
+        const titulos = fin.titulos || [];
+        if (titulos.length === 0) {
+          loadEl.outerHTML = '<div class="empty">⚠ Erro ao carregar boletos. Tente recarregar a busca.</div>';
+          return;
+        }
+        let finHtml2 = '<div style="background:rgba(255,180,0,.1); color:var(--y); padding:6px 10px; border-radius:6px; font-size:11px; margin-bottom:8px">⚠ Boletos/PIX indisponíveis (mostrando dados básicos)</div>';
+        titulos.forEach((t,i)=>{
+          const vencido = t.status==='A'&&new Date(t.vencimento)<new Date();
+          const sl=SF[t.status]||(vencido?'Vencido':'—');
+          let tBody=mrow('Vencimento',t.vencimento)+mrow('Valor','R$ '+t.valor);
+          finHtml2+=item(`fin-${i}`,`<span class="item-title">R$ ${t.valor}</span><span class="item-sub">${t.vencimento||'—'}</span>`,tBody,false,badge(vencido?'Vencido':sl,vencido?'vermelho':bc(sl)));
+        });
+        loadEl.parentElement.innerHTML = finHtml2;
+      });
+    }
+  }
+
+  // ── OS ABERTAS ──
+  let osAbHtml=d.os_abertas.length===0?'<div class="empty">Nenhuma OS em aberto</div>':'';
+  d.os_abertas.forEach((o,i)=>{
+    let b=mrow('Protocolo',o.protocolo)+mrow('Abertura',fmt(o.abertura))+mrow('Técnico',o.tecnico);
+    if(o.diagnostico) b+=infoBox('Diagnóstico',o.diagnostico,'diag');
+    if(o.mensagem) b+=infoBox('Mensagem',o.mensagem);
+    if(o.mensagem_resposta) b+=infoBox('Atualização',o.mensagem_resposta,'resp');
+    b+=`<div class="ozmap-os-section" style="margin-top:6px"></div>`; // resumo OZmap (preenchido após buscarOZmap)
+    const labelAg = o.status_raw === 'AG' ? '🔄 Reagendar' : '📅 Agendar';
+    b+=`<div class="btns">
+      <button class="btn-sm btn-yellow" data-action="abrir-agendar" data-p="${o.id}" data-p2="${(o.assunto||'').replace(/"/g,'&quot;')}">${labelAg}</button>
+    </div>`;
+    const extraB=badge(o.status,bc(o.status))+' '+badge('🕐 SLA: '+slaLabel(o.status_sla),bcSLA(o.status_sla));
+    osAbHtml+=item(`os-ab-${i}`,`<span class="item-title">#${o.id}</span><span class="item-sub">${o.assunto||'—'}</span>`,b,true,extraB);
+  });
+  elRes.innerHTML += card('os-ab','OS Abertas', d.os_abertas.length>0?[[d.os_abertas.length+' aberta(s)','amarelo']]:[], osAbHtml, d.os_abertas.length>0);
+
+  // ── OS ENCERRADAS ──
+  let osEnHtml=d.os_encerradas.length===0?'<div class="empty">Sem OS encerradas recentes</div>':'';
+  d.os_encerradas.forEach((o,i)=>{
+    let b=mrow('Protocolo',o.protocolo)+mrow('Abertura',fmt(o.abertura))+mrow('Fechamento',fmt(o.fechamento))+mrow('Técnico',o.tecnico);
+    if(o.diagnostico) b+=infoBox('Diagnóstico',o.diagnostico,'diag');
+    if(o.mensagem) b+=infoBox('Mensagem',o.mensagem);
+    if(o.mensagem_resposta) b+=infoBox('Encerramento',o.mensagem_resposta,'resp');
+    osEnHtml+=item(`os-en-${i}`,`<span class="item-title">#${o.id}</span><span class="item-sub">${o.assunto||'—'}</span>`,b,false,badge('Finalizada','verde'));
+  });
+  elRes.innerHTML += card('os-en',`OS Encerradas (${d.os_encerradas.length})`, [], osEnHtml, false);
+
+  // ── COMODATOS ──
+  if (d.comodatos?.length>0) {
+    let comHtml=d.comodatos.map((co,i)=>{
+      // v1.7.6 — tipo já vem do workflow enriquecido
+      const tipoBadge = co.tipo ? badge(co.tipo, 'cinza') + ' ' : '';
+      let b=mrow('Equipamento',  co.produto||co.nome_produto||co.descricao_produto||co.nome)
+           +mrow('Tipo',         co.tipo||null)
+           +mrow('Descrição',    co.descricao||co.obs||co.observacao||null)
+           +mrow('Modelo',       co.modelo||co.nome_modelo||null)
+           +mrow('Serial',       co.serial||co.numero_serie||co.sn||null)
+           +mrow('MAC',          co.mac||co.mac_address||null)
+           +mrow('Patrimônio',   co.patrimonio||co.num_patrimonio||co.id_patrimonio||null)
+           +mrow('Entrega',      fmt(co.entrega||co.data_entrega||null))
+           +mrow('Devolução',    fmt(co.devolucao||co.data_devolucao||null));
+      const titulo=co.produto||co.nome_produto||('Equip. #'+co.id);
+      return item(`com-${i}`,`<span class="item-title">${titulo}</span>`,b,false,tipoBadge + badge('Comodato','azul'));
+    }).join('');
+    elRes.innerHTML += card('comodatos',`Comodatos (${d.comodatos.length})`,[['Equipamentos','azul']],comHtml,false);
+  }
+
+  // ── CARDS EXTRAS — carregamento lazy ──
+  elRes.innerHTML += card('tickets','Tickets de Atendimento',[],
+    `<div id="tickets-content"><div class="lazy-load" data-load="tickets">📂 Clique para carregar tickets do cliente</div></div>`, false);
+
+  elRes.innerHTML += card('hist-contrato','Histórico do Contrato',[],
+    `<div id="hist-content"><div class="lazy-load" data-load="historico">📋 Clique para carregar histórico</div></div>`, false);
+
+  elRes.innerHTML += card('negociacoes','Negociações CRM',[],
+    `<div id="negoc-content"><div class="lazy-load" data-load="negociacoes">🤝 Clique para carregar negociações</div></div>`, false);
+
+  elRes.innerHTML += card('histsz','Histórico SZ Chat',[],
+    `<div id="histsz-content"><div class="lazy-load" data-load="histsz">💬 Clique para carregar conversas do SZ Chat</div></div>`, false);
+
+  elRes.innerHTML += card('produtos-contrato','Produtos do Contrato',[],
+    `<div id="prod-content"><div class="lazy-load" data-load="produtos">📦 Clique para carregar produtos</div></div>`, false);
+
+  elRes.innerHTML += card('tv-sva','TV / SVA',[],
+    `<div id="tvsva-content"><div class="lazy-load" data-load="tvsva">📺 Clique para carregar TV/SVA</div></div>`, false);
+
+  setState('result');
+
+  // v1.7.5 — Mostra só os cards da aba 'geral' por padrão
+  abaAtual = 'geral';
+  document.querySelectorAll('.card[data-tab]').forEach(card => {
+    card.style.display = card.getAttribute('data-tab') === 'geral' ? '' : 'none';
+  });
+  document.querySelectorAll('.tab-btn').forEach(b => {
+    b.classList.toggle('active', b.getAttribute('data-tab-target') === 'geral');
+  });
+
+  // Carregar OLT Cloud em paralelo
+  // OLT primeiro (sinal em tempo real = prioridade); OZmap (estático) só depois,
+  // pra não competir com o OLT pelas conexões do mesmo n8n.
+  if (d.logins?.length>0) {
+    buscarOLT(d.logins)
+      .catch(e=>console.warn('OLT:',e))
+      .finally(()=>{ buscarOZmap(d.logins).catch(e=>console.warn('OZmap:',e)); });
+  }
+
+  // Log
+  Logger.registrarLog(sessaoAtual,'CONSULTA_CONTRATO',{
+    contrato_id:d.contrato_id, cliente_nome:cl.nome, cliente_id:cl.id,
+    detalhes:{plano:c.plano,status:c.status}
+  });
+}
+
+// ── Lazy load dos cards extras (fallback se usuário clicar manual) ─────
+document.addEventListener('click', async e => {
+  const lazy = e.target.closest('.lazy-load');
+  if (!lazy) return;
+  const tipo = lazy.getAttribute('data-load');
+  if (!tipo||!dadosAtual) return;
+  // v1.7.5 — marca o body do card como loaded pra não disparar de novo na troca de aba
+  const card = lazy.closest('.card-body');
+  if (card) card.dataset.loaded = 'true';
+  lazy.textContent = '⏳ Carregando...';
+  try {
+    if (tipo==='tickets')     await carregarTickets(lazy);
+    if (tipo==='historico')   await carregarHistoricoContrato(lazy);
+    if (tipo==='negociacoes') await carregarNegociacoes(lazy);
+    if (tipo==='histsz')      await carregarHistSZ(lazy);
+    if (tipo==='produtos')    await carregarProdutos(lazy);
+    if (tipo==='tvsva')       await carregarTVSVA(lazy);
+  } catch(e) {
+    console.error('Lazy load erro:', tipo, e);
+    if (lazy.parentElement) lazy.innerHTML=`❌ Erro: ${traduzirErro(e)}`;
+    if (card) card.dataset.loaded = 'false';
+  }
+});
+
+async function carregarTickets(el) {
+  const cl = dadosAtual.cliente;
+  // Buscar por id_cliente
+  const res = await ixcGet('su_ticket',{
+    qtype:'su_ticket.id_cliente', query:String(cl.id),
+    oper:'=', page:'1', rp:'5',
+    sortname:'su_ticket.id', sortorder:'desc'
+  });
+  const tickets = res?.registros||[];
+  if (!tickets.length) {
+    if (el.parentElement) el.parentElement.innerHTML=`<div class="empty">Nenhum ticket encontrado</div>`;
+    return;
+  }
+
+  // v1.7.6 — Buscar descrição de cada assunto único (em paralelo)
+  const idsAssunto = [...new Set(tickets.map(t => t.id_assunto).filter(Boolean))];
+  const mapaAssunto = {};
+  if (idsAssunto.length > 0) {
+    await Promise.all(idsAssunto.map(async idA => {
+      try {
+        // v1.8.4 — su_ticket_assunto não é exposto na API; o assunto do ticket vive em su_oss_assunto
+        const ra = await ixcGet('su_oss_assunto', {
+          qtype: 'su_oss_assunto.id', query: String(idA),
+          oper: '=', page: '1', rp: '1',
+          sortname: 'su_oss_assunto.id', sortorder: 'asc'
+        });
+        const a = ra?.registros?.[0];
+        if (a) mapaAssunto[idA] = a.assunto || a.descricao || a.nome || ('Assunto #'+idA);
+      } catch(e) { /* fallback abaixo */ }
+    }));
+  }
+
+  const STATUS={A:'Aberto',F:'Finalizado',C:'Cancelado',R:'Respondido',P:'Pendente',E:'Encaminhado'};
+  let html=tickets.map((t,i)=>{
+    const sl=STATUS[t.status]||t.status;
+    // Prioridade: descrição vinda do lookup, depois campos que o IXC pode mandar
+    const assunto = mapaAssunto[t.id_assunto] || t.titulo || t.assunto || t.nome_assunto || t.descricao_assunto || ('Assunto #'+(t.id_assunto||t.id));
+    let b=mrow('Assunto',   assunto)
+         +mrow('Abertura',  fmt(t.data_abertura))
+         +mrow('Fechamento',fmt(t.data_fechamento))
+         +mrow('Setor',     t.nome_setor)
+         +mrow('Atendente', t.nome_atendente||t.nome_colaborador);
+    if(t.descricao||t.mensagem)         b+=infoBox('Descrição',  t.descricao||t.mensagem);
+    if(t.resposta||t.mensagem_resposta) b+=infoBox('Resposta',   t.resposta||t.mensagem_resposta,'resp');
+    return item(`tkt-${i}`,`<span class="item-title">#${t.id} — ${assunto}</span>`,b,i===0,badge(sl,bc(sl)));
+  }).join('');
+  if (el.parentElement) el.parentElement.innerHTML=html;
+}
+
+// ── Histórico SZ Chat (conversas migradas do SZ Chat; Supabase via n8n) ──
+function _histszDigits(v){ return (v||'').replace(/\D/g,''); }
+function _histszValores(cl){
+  // Identificadores do cliente p/ localizar as conversas. O CPF é a âncora
+  // estável (não muda se o cliente trocar de número); os telefones cobrem o
+  // resto. Gera variações de telefone com/sem o DDI 55.
+  const out = new Set();
+  const cpf = _histszDigits(cl && (cl.cpf || cl.cpf_cnpj));
+  if (cpf.length === 11 || cpf.length === 14) out.add(cpf);
+  [cl && cl.whatsapp, cl && cl.celular, cl && cl.telefone].forEach(t => {
+    const d = _histszDigits(t);
+    if (d.length < 8) return;
+    out.add(d);
+    if (d.startsWith('55')) out.add(d.slice(2)); else out.add('55' + d);
+  });
+  return [...out];
+}
+function _histszFmt(s){ try { return new Date(s).toLocaleString('pt-BR'); } catch(_) { return s || ''; } }
+
+async function carregarHistSZ(el) {
+  const container = document.getElementById('histsz-content') || el?.parentElement;
+  if (!container) return;
+  const cl = dadosAtual?.cliente;
+  const contratoAberto = String(dadosAtual?.contrato?.id || dadosAtual?.contrato_id || '');
+  const valores = _histszValores(cl);
+  if (!valores.length) { container.innerHTML = '<div class="empty">Sem CPF/telefone do cliente para buscar</div>'; return; }
+  container.innerHTML = '<div class="empty">⏳ Buscando conversas do SZ Chat...</div>';
+
+  let convs = [];
+  try {
+    const r = await fetch(WEBHOOK_HISTSZ, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ acao: 'conversas', valores, cliente_id: cl?.id, token: sessaoAtual?.token })
+    });
+    convs = await r.json();
+    if (!Array.isArray(convs)) convs = convs?.conversas || [];
+  } catch(e) { container.innerHTML = `❌ Erro ao buscar: ${e.message}`; return; }
+
+  if (!convs.length) { container.innerHTML = '<div class="empty">Nenhuma conversa do SZ Chat encontrada para este cliente</div>'; return; }
+
+  // markup de uma conversa (classe .histsz-conv p/ abrir mensagens)
+  const convCard = (c) => `<div class="histsz-conv" data-prot="${c.protocolo}" style="border:1px solid rgba(128,128,128,.25);border-radius:8px;padding:8px;margin-bottom:6px;cursor:pointer">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        ${badge(c.canal || '—', bc(c.canal))}${c.assunto ? ' ' + badge(c.assunto, 'azul') : ''}${(contratoAberto && Array.isArray(c.contratos) && c.contratos.map(String).includes(contratoAberto)) ? ' ' + badge('deste contrato', 'verde') : ''}
+        <b>#${c.protocolo}</b>
+        <span style="margin-left:auto;font-size:11px;color:var(--tx2)">${_histszFmt(c.inicio)}</span>
+      </div>
+      <div style="font-size:11px;color:var(--tx2);margin-top:4px">
+        ${c.qtd_mensagens || 0} msgs · cliente ${c.msgs_cliente || 0} · atend. ${c.msgs_atendente || 0}${c.qtd_midia ? ` · 📎 ${c.qtd_midia}` : ''}
+      </div>
+      <div class="histsz-msgs" id="histsz-msgs-${c.protocolo}" style="display:none;margin-top:8px"></div>
+    </div>`;
+
+  // cabeçalho colapsável genérico
+  const grpHtml = (titulo, count, inner, aberto, nivel) => {
+    const est = nivel === 0 ? 'font-weight:600;border-bottom:1px solid rgba(128,128,128,.2)' : 'color:var(--tx2)';
+    return `<div class="histsz-grp">
+      <div class="histsz-h" style="cursor:pointer;padding:${nivel===0?'4px':'3px'} 2px;${est}"><span class="histsz-chev">${aberto?'▾':'▸'}</span> ${titulo} <span style="color:var(--tx2);font-weight:400">(${count})</span></div>
+      <div class="histsz-body" style="display:${aberto?'block':'none'};margin-left:6px;margin-top:4px">${inner}</div>
+    </div>`;
+  };
+
+  let modo = 'data'; // 'data' | 'assunto'
+
+  const renderData = () => {
+    const g = {};
+    convs.forEach(c => { const d=new Date(c.inicio); const ano=isNaN(d.getTime())?'—':String(d.getFullYear()); const mk=isNaN(d.getTime())?'—':`${ano}-${String(d.getMonth()+1).padStart(2,'0')}`; (g[ano]=g[ano]||{}); (g[ano][mk]=g[ano][mk]||[]).push(c); });
+    const nomeMes=(mk)=>{ if(mk==='—')return 'Sem data'; const [y,m]=mk.split('-'); return new Date(Number(y),Number(m)-1,1).toLocaleString('pt-BR',{month:'long'}).replace(/^./,s=>s.toUpperCase())+' '+y; };
+    const anos=Object.keys(g).sort((a,b)=>b.localeCompare(a));
+    let h='';
+    anos.forEach((ano,ai)=>{
+      const meses=Object.keys(g[ano]).sort((a,b)=>b.localeCompare(a));
+      const totAno=meses.reduce((s,mk)=>s+g[ano][mk].length,0);
+      let inner='';
+      meses.forEach((mk,mi)=>{ inner += grpHtml(nomeMes(mk), g[ano][mk].length, g[ano][mk].map(convCard).join(''), ai===0&&mi===0, 1); });
+      h += grpHtml(ano, totAno, inner, ai===0, 0);
+    });
+    return h;
+  };
+
+  const renderAssunto = () => {
+    const g = {};
+    convs.forEach(c => { const a=c.assunto||'Outros'; (g[a]=g[a]||[]).push(c); });
+    const chaves=Object.keys(g).sort((a,b)=>{ if(a==='Outros')return 1; if(b==='Outros')return -1; return g[b].length-g[a].length; });
+    let h='';
+    chaves.forEach((a,ai)=>{
+      const lista=g[a].slice().sort((x,y)=>String(y.inicio).localeCompare(String(x.inicio)));
+      h += grpHtml(a, lista.length, lista.map(convCard).join(''), ai===0, 0);
+    });
+    return h;
+  };
+
+  const attachListeners = () => {
+    container.querySelectorAll('.histsz-h').forEach(h => {
+      h.addEventListener('click', () => {
+        const body = h.nextElementSibling; if (!body) return;
+        const chev = h.querySelector('.histsz-chev');
+        const open = body.style.display !== 'none';
+        body.style.display = open ? 'none' : 'block';
+        if (chev) chev.textContent = open ? '▸' : '▾';
+      });
+    });
+    container.querySelectorAll('.histsz-conv').forEach(div => {
+      div.addEventListener('click', async (ev) => {
+        if (ev.target.closest('.histsz-msgs')) return;
+        const prot = div.getAttribute('data-prot');
+        const box = document.getElementById('histsz-msgs-' + prot);
+        if (!box) return;
+        if (box.style.display !== 'none') { box.style.display = 'none'; return; }
+        box.style.display = 'block';
+        if (box.dataset.loaded === 'true') return;
+        box.innerHTML = '<div class="empty">⏳ Carregando mensagens...</div>';
+        try {
+          const r = await fetch(WEBHOOK_HISTSZ, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ acao: 'mensagens', protocolo: prot, token: sessaoAtual?.token })
+          });
+          let msgs = await r.json();
+          if (!Array.isArray(msgs)) msgs = msgs?.mensagens || [];
+          box.dataset.loaded = 'true';
+          if (!msgs.length) { box.innerHTML = '<div class="empty">Sem mensagens</div>'; return; }
+          box.innerHTML = msgs.map(m => {
+            const who = m.remetente || '—';
+            const txt = (m.mensagem || '').replace(/<br\s*\/?>/gi, ' ');
+            const indisp = (m.tem_midia && !m.midia_url) ? ` ${badge('📎 ' + (m.midia_tipo || 'mídia') + ' · indisponível', 'cinza')}` : '';
+            let anexo = '';
+            if (m.midia_url) {
+              anexo = (m.midia_tipo === 'images')
+                ? `<div style="margin-top:4px"><a href="${m.midia_url}" target="_blank" rel="noopener"><img src="${m.midia_url}" style="max-width:180px;max-height:180px;border-radius:6px"></a></div>`
+                : `<div style="margin-top:4px"><a href="${m.midia_url}" target="_blank" rel="noopener">📎 abrir ${m.midia_tipo || 'anexo'}</a></div>`;
+            }
+            return `<div style="border-left:3px solid ${who==='cliente'?'#22c55e':who==='atendente'?'#00c4ff':'#888'};padding:2px 8px;margin:3px 0">
+              <div style="font-size:10px;color:var(--tx2)">${_histszFmt(m.data_hora)} · ${who}${indisp}</div>
+              <div style="font-size:12px">${txt}${anexo}</div>
+            </div>`;
+          }).join('');
+        } catch(e) { box.innerHTML = `❌ ${e.message}`; }
+      });
+    });
+  };
+
+  const render = () => {
+    const btn = (id, txt) => `<button class="histsz-modo" data-modo="${id}" style="flex:1;padding:5px 6px;border:1px solid rgba(128,128,128,.3);border-radius:6px;cursor:pointer;font-size:11px;background:${modo===id?'#00c4ff':'transparent'};color:${modo===id?'#00141f':'inherit'};font-weight:${modo===id?'600':'400'}">${txt}</button>`;
+    const head = `<div style="display:flex;gap:6px;margin-bottom:8px">${btn('data','📅 Ano/Mês')}${btn('assunto','🏷️ Assunto')}</div>
+      <div style="font-size:11px;color:var(--tx2);margin-bottom:6px">Histórico do cliente · todos os contratos · ${convs.length} conversa(s)</div>`;
+    container.innerHTML = head + (modo === 'data' ? renderData() : renderAssunto());
+    container.querySelectorAll('.histsz-modo').forEach(b => b.addEventListener('click', () => { modo = b.getAttribute('data-modo'); render(); }));
+    attachListeners();
+  };
+
+  render();
+}
+
+async function carregarHistoricoContrato(el) {
+  // Salvar referência ao container ANTES de qualquer await
+  const container = document.getElementById('hist-content') || el?.parentElement;
+  if (!container) return;
+
+  if (!dadosAtual?.contrato_id) {
+    container.innerHTML = '<div class="empty">Sem dados de contrato</div>';
+    return;
+  }
+
+  const cid = String(dadosAtual.contrato_id);
+
+  let hist = [];
+  // Mostrar loading
+  container.innerHTML = '<div class="empty">⏳ Buscando histórico...</div>';
+
+  // Tentativa 1: filtrar por id_contrato (v1.7.6 — aumentado pra 30 registros)
+  try {
+    const r1 = await ixcGet('cliente_contrato_historico', {
+      qtype: 'cliente_contrato_historico.id_contrato',
+      query: cid, oper: '=', page: '1', rp: '30',
+      sortname: 'cliente_contrato_historico.id', sortorder: 'desc'
+    });
+    console.log('[HIST] id_contrato → total:', r1?.total, 'regs:', r1?.registros?.length);
+    if (r1?.registros?.length) hist = r1.registros;
+  } catch(e) { console.warn('[HIST] erro 1:', e.message); }
+
+  // Tentativa 2: filtrar por id_cliente_contrato
+  if (!hist.length) {
+    try {
+      const r2 = await ixcGet('cliente_contrato_historico', {
+        qtype: 'cliente_contrato_historico.id_cliente_contrato',
+        query: cid, oper: '=', page: '1', rp: '30',
+        sortname: 'cliente_contrato_historico.id', sortorder: 'desc'
+      });
+      if (r2?.registros?.length) hist = r2.registros;
+    } catch(e) { console.warn('[HIST] erro 2:', e.message); }
+  }
+
+  // Reduzir ao mês passado e atual
+  const _iniHist = new Date(); _iniHist.setDate(1); _iniHist.setMonth(_iniHist.getMonth()-1); _iniHist.setHours(0,0,0,0);
+  hist = hist.filter(h => {
+    const raw = (h.data || h.data_alteracao || '').toString().replace(' ','T');
+    const dt = new Date(raw);
+    return !isNaN(dt.getTime()) && dt >= _iniHist;
+  });
+
+  if (!hist.length) {
+    container.innerHTML = '<div class="empty">Sem alterações no mês passado/atual</div>';
+    return;
+  }
+
+  function buildHistItem(h,i) {
+    const data    = fmt(h.data||h.data_alteracao)||'—';
+    const tipo    = h.tipo||h.tipo_historico||h.acao||null;
+    const resp    = h.nome_usuario||h.usuario||h.responsavel||h.nome_responsavel||null;
+    const campo   = h.campo||h.descricao||null;
+    const antes   = h.valor_anterior||h.antes||null;
+    const depois  = h.valor_novo||h.depois||null;
+    const hist_tx = h.historico||h.texto||h.mensagem||null;
+    let b = mrow('Data', data)
+          + mrow('Tipo', tipo)
+          + mrow('Responsável', resp)
+          + mrow('Campo', campo)
+          + mrow('Antes', antes)
+          + mrow('Depois', depois);
+    if (hist_tx) b += infoBox('Histórico', hist_tx);
+    const sub = campo || tipo || 'Alteração';
+    return item(`hist-${i}`, `<span class="item-title">${data}</span><span class="item-sub">${sub}</span>`, b, false, '');
+  }
+
+  container.innerHTML = hist.map(buildHistItem).join('');
+}
+
+async function carregarNegociacoes(el) {
+  const cl = dadosAtual.cliente;
+  const res = await ixcGet('crm_negociacoes',{
+    qtype:'crm_negociacoes.id_cliente', query:String(cl.id),
+    oper:'=', page:'1', rp:'10',
+    sortname:'crm_negociacoes.id', sortorder:'desc'
+  });
+  const negs = res?.registros||[];
+  if (!negs.length) { el.parentElement.innerHTML='<div class="empty">Nenhuma negociação</div>'; return; }
+  let html=negs.map((n,i)=>{
+    let b=mrow('Data',fmt(n.data))+mrow('Status',n.status,bc(n.status))
+         +mrow('Situação', n.descricao_status||n.status_descricao||n.situacao||null)
+         +mrow('Plano',n.nome_plano)+mrow('Atendente',n.nome_atendente);
+    if(n.observacao||n.descricao) b+=infoBox('Observação',n.observacao||n.descricao);
+    return item(`neg-${i}`,`<span class="item-title">${n.nome_plano||'#'+n.id}</span><span class="item-sub">${fmt(n.data)||'—'}</span>`,b,i===0,badge(n.status,bc(n.status)));
+  }).join('');
+  el.parentElement.innerHTML=html;
+}
+
+async function carregarProdutos(el) {
+  const res = await ixcGet('vd_contratos_produtos',{
+    qtype:'vd_contratos_produtos.id_contrato', query:String(dadosAtual.contrato_id),
+    oper:'=', page:'1', rp:'20',
+    sortname:'vd_contratos_produtos.id', sortorder:'asc'
+  });
+  const prods = res?.registros||[];
+  if (!prods.length) { el.parentElement.innerHTML='<div class="empty">Nenhum produto</div>'; return; }
+  let html=prods.map((p,i)=>{
+    let b=mrow('Produto',p.descricao||p.nome_produto)+mrow('Quantidade',p.quantidade)
+         +mrow('Valor unit.',p.valor_unitario?'R$ '+p.valor_unitario:null)
+         +mrow('Valor total',p.valor_total?'R$ '+p.valor_total:null)
+         +mrow('Status',p.status,bc(p.status));
+    return item(`prod-${i}`,`<span class="item-title">${p.descricao||p.nome_produto||'Produto #'+p.id}</span>`,b,false,p.valor_total?badge('R$ '+p.valor_total,'cinza'):'');
+  }).join('');
+  el.parentElement.innerHTML=html;
+}
+
+async function carregarTVSVA(el) {
+  // v1.7.5 — proteger contra elemento removido do DOM durante carregamento
+  if (!el || !el.parentElement) {
+    console.warn('[IXC] carregarTVSVA: elemento alvo não está mais no DOM, abortando');
+    return;
+  }
+  const cl  = dadosAtual.cliente;
+  const cid = String(dadosAtual.contrato_id);
+  const clid = String(cl.id);
+
+  // Tentar múltiplos campos possíveis em sequência
+  async function buscarTV() {
+    const tentativas = [
+      {qtype:'tv_usuarios.id_cliente_contrato', query:cid},
+      {qtype:'tv_usuarios.id_contrato',         query:cid},
+      {qtype:'tv_usuarios.id_cliente',          query:clid},
+    ];
+    for (const t of tentativas) {
+      try {
+        const r = await ixcGet('tv_usuarios', {...t, oper:'=', page:'1', rp:'10', sortname:'tv_usuarios.id', sortorder:'asc'});
+        if (r?.registros?.length) return r.registros;
+        if (r?.total > 0)         return r.registros || [];
+      } catch(e) {}
+    }
+    return [];
+  }
+
+  async function buscarSVA() {
+    const tentativas = [
+      {qtype:'sva_usuarios.id_cliente_contrato', query:cid},
+      {qtype:'sva_usuarios.id_contrato',         query:cid},
+      {qtype:'sva_usuarios.id_cliente',          query:clid},
+    ];
+    for (const t of tentativas) {
+      try {
+        const r = await ixcGet('sva_usuarios', {...t, oper:'=', page:'1', rp:'10', sortname:'sva_usuarios.id', sortorder:'asc'});
+        if (r?.registros?.length) return r.registros;
+        if (r?.total > 0)         return r.registros || [];
+      } catch(e) {}
+    }
+    return [];
+  }
+
+  const [tvs, svas] = await Promise.all([buscarTV(), buscarSVA()]);
+
+  if (!tvs.length&&!svas.length) { el.parentElement.innerHTML='<div class="empty">Nenhum serviço TV/SVA</div>'; return; }
+
+  let html='';
+  if (tvs.length>0) {
+    html+=secT('TV');
+    html+=tvs.map((t,i)=>{
+      let b=mrow('Login',      t.login||t.usuario||t.login_tv)
+           +mrow('Senha',      t.senha||t.password)
+           +mrow('Status',     t.status,bc(t.status))
+           +mrow('Plataforma', t.descricao_plataforma||t.plataforma||t.nome_plataforma||null)
+           +mrow('Plano',      t.nome_plano||t.descricao_plano||t.plano)
+           +mrow('Servidor',   t.servidor||t.host||null)
+           +mrow('Validade',   fmt(t.data_validade||t.validade||null))
+           +mrow('Observação', t.obs||t.observacao||null);
+      const titulo=t.login||t.usuario||t.login_tv||('TV #'+t.id);
+      return item(`tv-${i}`,`<span class="item-title">${titulo}</span>`,b,i===0,badge(t.status,bc(t.status)));
+    }).join('');
+  }
+  if (svas.length>0) {
+    html+=secT('SVA');
+    html+=svas.map((s,i)=>{
+      let b=mrow('Login',   s.login||s.usuario)
+           +mrow('Senha',   s.senha||s.password)
+           +mrow('Status',  s.status,bc(s.status))
+           +mrow('Serviço', s.nome_sva||s.descricao||s.id_sva)
+           +mrow('Validade',fmt(s.data_validade||null));
+      return item(`sva-${i}`,`<span class="item-title">${s.nome_sva||s.login||'SVA #'+s.id}</span>`,b,false,badge(s.status,bc(s.status)));
+    }).join('');
+  }
+  // v1.7.5 — revalida antes de escrever (pode ter sido removido durante o await)
+  if (!el.parentElement) return;
+  el.parentElement.innerHTML=html;
+}
+
+// ── Boleto / PIX ──────────────────────────────
+window.carregarBoleto = async function(titulo_id, idx) {
+  const container = document.getElementById(`boleto-btns-${titulo_id}`);
+  const btn = container ? container.querySelector('button[data-action="boleto"]') : null;
+  if (btn) { btn.textContent='⏳ Buscando...'; btn.disabled=true; }
+  try {
+    const [resBol,resPix] = await Promise.allSettled([
+      fetch(WEBHOOK_ACOES,{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({acao:'boleto',titulo_id:String(titulo_id),token:sessaoAtual?.token})}).then(r=>r.json()),
+      fetch(WEBHOOK_ACOES,{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({acao:'pix',titulo_id:String(titulo_id),token:sessaoAtual?.token})}).then(r=>r.json())
+    ]);
+    // v1.8.4 — formato atual do webhook: boleto_base64 / raw.linha_digitavel / pix_copia_cola / qr_code
+    const bol = resBol.status==='fulfilled' ? resBol.value : null;
+    const pix = resPix.status==='fulfilled' ? resPix.value : null;
+    const base64 = bol?.boleto_base64 || null;
+    const linha  = bol?.raw?.linha_digitavel || bol?.raw?.registros?.[0]?.linha_digitavel || null;
+    const email  = dadosAtual?.cliente?.email || '';
+
+    let html='';
+    if (base64) {
+      const blobUrl = 'data:application/pdf;base64,' + base64;
+      html += `<a class="btn-sm btn-blue" href="${blobUrl}" download="boleto_${titulo_id}.pdf">📄 Baixar boleto PDF</a>`;
+    }
+    if (linha) {
+      html += `<div style="margin:6px 0;padding:6px 8px;background:var(--bg3);border-radius:6px;border:1px solid var(--b)">
+        <div style="font-size:9px;color:var(--tx3);font-family:var(--font-head);text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px">Linha digitável</div>
+        <div style="font-family:var(--font-mono);font-size:10px;color:var(--tx);word-break:break-all;line-height:1.5">${linha}</div>
+        <button class="btn-sm btn-gray" style="margin-top:6px" data-action="pix" data-p="${linha}">📋 Copiar linha dig.</button>
+      </div>`;
+    }
+    if (pix?.pix_copia_cola) html+=`<button class="btn-sm btn-green" data-action="pix" data-p="${pix.pix_copia_cola}">⚡ Copiar PIX</button>`;
+    if (pix?.qr_code) html+=`<div style="margin-top:8px"><img src="data:image/png;base64,${pix.qr_code}" style="width:120px;height:120px;border-radius:6px"></div>`;
+    if (!base64 && !linha && !pix?.pix_copia_cola) html='<div style="color:var(--y);font-size:11px;margin-bottom:6px">Boleto/PIX não disponível para este título</div>';
+    html += `<button class="btn-sm btn-gray" data-action="enviar-boleto-email" data-p="${titulo_id}" data-p2="${email}">✉ Enviar por e-mail</button>`;
+
+    if (container) container.innerHTML=html;
+  } catch(e) {
+    if (container) container.innerHTML='<div style="color:#e05252;font-size:11px">Erro ao carregar boleto</div>';
+  }
+};
+
+// ── OLT Cloud ─────────────────────────────────
+function atualizarOLTStatus(msg,cor) {
+  document.querySelectorAll('.olt-section').forEach(el=>{
+    el.innerHTML=`<div class="sec-title">OLT Cloud</div><div class="olt-status-msg ${cor||'cinza'}">${msg}</div>`;
+  });
+}
+
+// fmtOLT já declarada no topo (dedup v1.6)
+
+// ── Rede OZmap (Fase 1 — leitura: CTO, porta, drop real, coords) ──
+function secTOZ(){ return '<div class="sec-title">Rede (OZmap)</div>'; }
+function renderOZmapHTML(d) {
+  const cx = d.caixa || {};
+  const tipoB = cx.tipo ? ' ' + badge(cx.tipo, 'azul') : '';
+  const implB = ' ' + (cx.implantada ? badge('Implantada','verde') : badge('Planejada','amarelo'));
+  let h = secTOZ();
+  h += mrow('Caixa (CTO)', (cx.nome || '—') + tipoB + implB);
+  h += mrow('Porta',     d.porta != null ? String(d.porta) : null);
+  h += mrow('Drop real', d.drop_m != null ? (d.drop_m + ' m') : null);
+  if (d.onu && (d.onu.serial || d.onu.pppoe)) h += mrow('ONU (OZmap)', [d.onu.serial, d.onu.pppoe].filter(Boolean).join(' · '));
+  if (d.endereco) h += mrow('Endereço', d.endereco);
+  const cc = Array.isArray(d.coords_cliente) ? d.coords_cliente : null; // [lng, lat]
+  const cb = (cx.coords && Array.isArray(cx.coords)) ? cx.coords : null; // [lng, lat]
+  let btns = '';
+  if (cc) btns += `<button class="btn-sm btn-blue" data-action="link" data-p="https://www.google.com/maps?q=${cc[1]},${cc[0]}">📍 Cliente no mapa</button>`;
+  if (cb) btns += `<button class="btn-sm btn-gray" data-action="link" data-p="https://www.google.com/maps?q=${cb[1]},${cb[0]}">📦 Caixa no mapa</button>`;
+  if (btns) h += `<div class="btns">${btns}</div>`;
+  return h;
+}
+async function buscarOZmap(logins) {
+  const resultados = new Array(logins.length).fill(null);
+  await Promise.all(logins.map(async (l, i) => {
+    const sec = document.getElementById('ozmap-' + i);
+    try {
+      const res = await fetch(WEBHOOK_OZMAP, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ login_id: String(l.id), login: l.login || '', onu_mac: l.onu_mac || '' })
+      });
+      const d = await res.json();
+      if (!d || d.ok === false) { if (sec) sec.innerHTML = secTOZ() + '<div class="olt-status-msg amarelo">⚠ OZmap indisponível</div>'; return; }
+      if (!d.encontrado) {
+        if (sec) sec.innerHTML = secTOZ()
+          + '<div class="olt-status-msg cinza">Login não mapeado no OZmap</div>'
+          + '<div class="btns"><button class="btn-sm btn-blue" data-action="mapear-ozmap" data-p="'+String(l.id)+'" data-p2="'+(l.login||'').replace(/"/g,'&quot;')+'">🗺️ Mapear no OZmap</button></div>';
+        return;
+      }
+      resultados[i] = d;
+      if (dadosAtual) { dadosAtual._ozmap = dadosAtual._ozmap || {}; dadosAtual._ozmap[String(l.id)] = d; }
+      if (sec) sec.innerHTML = renderOZmapHTML(d);
+    } catch(e) {
+      if (sec) sec.innerHTML = secTOZ() + '<div class="olt-status-msg amarelo">⚠ Erro ao consultar OZmap</div>';
+    }
+  }));
+  // Resumo da rede dentro das OS abertas (mesma instalação física do contrato)
+  const ozPrimeiro = resultados.find(r => r && r.encontrado);
+  document.querySelectorAll('.ozmap-os-section').forEach(s => {
+    if (ozPrimeiro) s.innerHTML = renderOZmapHTML(ozPrimeiro);
+    else s.remove(); // sem dado no OZmap: não polui a OS
+  });
+}
+
+// ═══════════════════════════════════════════════
+// Fase 3 — Mapa p/ desenhar o drop no OZmap (SOMENTE LEITURA + desenho local;
+// a gravação é um passo separado). Carrega Leaflet sob demanda.
+// ═══════════════════════════════════════════════
+let _ozEstado = null;
+function _carregarLeaflet() {
+  return new Promise(function(resolve, reject){
+    if (window.L) { resolve(); return; }
+    var css = document.createElement('link');
+    css.rel = 'stylesheet';
+    css.href = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css';
+    document.head.appendChild(css);
+    var s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js';
+    s.onload = function(){ resolve(); };
+    s.onerror = function(){ reject(new Error('Falha ao carregar o mapa (Leaflet)')); };
+    document.head.appendChild(s);
+  });
+}
+function _ozStatus(txt){ var e=document.getElementById('ozmap-mapa-status'); if(e) e.textContent=txt; }
+function _ozCoord(lat,lng){ var a=parseFloat(lat), b=parseFloat(lng); if(isFinite(a)&&isFinite(b)&&(a!==0||b!==0)&&Math.abs(a)<=90&&Math.abs(b)<=180) return [a,b]; return null; }
+function _ozCoordStr(s){ if(!s) return null; var m=String(s).match(/(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)/); if(m){ var a=parseFloat(m[1]), b=parseFloat(m[2]); if(isFinite(a)&&isFinite(b)) return [a,b]; } return null; }
+function _ozDist(aLat,aLng,bLat,bLng){ var R=6371000,dLat=(bLat-aLat)*Math.PI/180,dLng=(bLng-aLng)*Math.PI/180,s1=Math.sin(dLat/2),s2=Math.sin(dLng/2),a=s1*s1+Math.cos(aLat*Math.PI/180)*Math.cos(bLat*Math.PI/180)*s2*s2; return Math.round(2*R*Math.asin(Math.sqrt(a))); }
+function _ozBuscarCTO(term){
+  var st=_ozEstado; if(!st||!st.caixas) return; term=(term||'').trim().toUpperCase(); if(!term) return;
+  var hit=st.caixas.filter(function(c){return c.coords && st.caixaMarkers && st.caixaMarkers[c.id];}).find(function(c){ return (c.nome||'').toUpperCase().indexOf(term)>=0; });
+  if(!hit){ toast('CTO não encontrada: '+term,'err'); return; }
+  try{ st.map.setView([hit.coords[1],hit.coords[0]],19); }catch(e){}
+  var mk=st.caixaMarkers&&st.caixaMarkers[hit.id];
+  if(mk){ try{ mk.openTooltip(); var r0=mk.options.radius,w0=mk.options.weight; mk.setStyle({radius:16,weight:5}); setTimeout(function(){try{mk.setStyle({radius:r0,weight:w0});}catch(e){}},1400); }catch(e){} }
+}
+function _ozRedesenhar(){
+  var st=_ozEstado; if(!st||!st.map) return; var map=st.map;
+  if (st.polyline){ map.removeLayer(st.polyline); st.polyline=null; }
+  var pts=[];
+  if (st.ctoSel && st.ctoSel.coords) pts.push([st.ctoSel.coords[1], st.ctoSel.coords[0]]);
+  st.rota.forEach(function(p){ pts.push([p.lat,p.lng]); });
+  if (st.cliente) pts.push([st.cliente.lat, st.cliente.lng]);
+  if (pts.length>=2) st.polyline=L.polyline(pts,{color:'#00e676',weight:4}).addTo(map);
+  _ozStatus('CTO: '+(st.ctoSel?st.ctoSel.nome:'— clique numa CTO')+' · postes: '+st.rota.length+' · cliente: '+(st.cliente?'✓ marcado':'— clique na casa'));
+}
+function _ozRecolorPostes(){
+  var st=_ozEstado; if(!st||!st.posteMarkers) return;
+  var naRota={}; st.rota.forEach(function(p){ naRota[p.id]=true; });
+  Object.keys(st.posteMarkers).forEach(function(id){
+    var m=st.posteMarkers[id];
+    if (naRota[id]) m.setStyle({color:'#00e676',fillColor:'#00e676',radius:7,fillOpacity:.95});
+    else m.setStyle({color:'#8aa4d0',fillColor:'#8aa4d0',radius:5,fillOpacity:.6});
+  });
+}
+function _ozSelecionarCTO(cx, marker){
+  var st=_ozEstado; if(!st) return;
+  if (cx && cx.implantada===false) toast('⚠ "'+(cx.nome||'?')+'" é PLANEJADA (não implantada) — confirme se é a CTO real de campo','err');
+  if (st._ctoMarker){ try{ st._ctoMarker.setStyle({radius:(st._ctoMarker._ozR||9),weight:2}); }catch(e){} }
+  st.ctoSel=cx; st._ctoMarker=marker;
+  if (marker){ try{ marker.setStyle({radius:12,weight:4}); }catch(e){} }
+  _ozRedesenhar();
+}
+function _ozClicarPoste(p, marker){
+  var st=_ozEstado; if(!st) return;
+  if (!st.ctoSel){ toast('Clique na CTO de origem primeiro','err'); return; }
+  if (st.rota.length && st.rota[st.rota.length-1].id===p.id) return; // evita duplicar em sequência
+  st.rota.push({ id:p.id, lat:p.coords[1], lng:p.coords[0] });
+  if (marker){ try{ marker.setStyle({color:'#00e676',fillColor:'#00e676',radius:7,fillOpacity:.95}); }catch(e){} }
+  _ozRedesenhar();
+}
+function _ozSetCliente(latlng){
+  var st=_ozEstado; if(!st) return;
+  st.cliente={ lat:latlng.lat, lng:latlng.lng };
+  if (st.clienteMarker){ try{ st.map.removeLayer(st.clienteMarker); }catch(e){} }
+  st.clienteMarker=L.marker([latlng.lat,latlng.lng]).addTo(st.map).bindTooltip('Casa do cliente');
+  _ozRedesenhar();
+}
+function _ozDesfazer(){
+  var st=_ozEstado; if(!st) return;
+  if (st.rota.length){ st.rota.pop(); _ozRecolorPostes(); _ozRedesenhar(); }
+  else if (st.cliente){ st.cliente=null; if(st.clienteMarker){try{st.map.removeLayer(st.clienteMarker);}catch(e){} st.clienteMarker=null;} _ozRedesenhar(); }
+}
+function _ozLimpar(){
+  var st=_ozEstado; if(!st) return;
+  st.rota=[]; st.cliente=null;
+  if(st.clienteMarker){try{st.map.removeLayer(st.clienteMarker);}catch(e){} st.clienteMarker=null;}
+  _ozRecolorPostes(); _ozRedesenhar();
+}
+function fecharMapaOZmap(){
+  var m=document.getElementById('ozmap-mapa-modal'); if(m) m.style.display='none';
+  if (_ozEstado&&_ozEstado._fix){ window.removeEventListener('resize',_ozEstado._fix); window.removeEventListener('orientationchange',_ozEstado._fix); }
+  if (_ozEstado&&_ozEstado.map){ try{_ozEstado.map.remove();}catch(e){} }
+  _ozEstado=null;
+}
+function _ozSalvarPreview(){
+  var st=_ozEstado; if(!st) return;
+  if (!st.ctoSel){ toast('Selecione a CTO de origem (clique numa bolinha azul)','err'); return; }
+  if (!st.cliente){ toast('Marque a casa do cliente (clique no mapa)','err'); return; }
+  var drop_poles = st.rota.map(function(p){return p.id;});
+  // ONU/conexão que o PWA já buscou (IXC + OLT Cloud) p/ preencher no OZmap
+  var oltc = (dadosAtual && dadosAtual._olt_cloud && dadosAtual._olt_cloud[st.login_id]) || {};
+  var loginObj = (dadosAtual && dadosAtual.logins ? dadosAtual.logins : []).find(function(x){ return String(x.id)===String(st.login_id); }) || {};
+  var onu = {
+    pppoe:  loginObj.login || st.login || null,
+    serial: oltc.serial || null,
+    mac:    loginObj.onu_mac || null
+  };
+  // potência da ONU vira potencyRead no OZ
+  var potencia = (oltc.sinal_onu!=null ? oltc.sinal_onu : null);
+  var payload = {
+    acao:'criar',
+    login_id:String(st.login_id),
+    criado_por: (sessaoAtual && (sessaoAtual.usuario_nome || sessaoAtual.usuario_login)) || null,
+    client:{ code:String(st.login_id), name:(dadosAtual&&dadosAtual.cliente&&dadosAtual.cliente.nome)||null },
+    box: st.ctoSel.id,
+    coords:[st.cliente.lng, st.cliente.lat],
+    auto_connect:true,
+    drop_poles: drop_poles,
+    certificar: true,                 // estado de implantação → Certificado
+    onu: onu,                         // preenche ONU (PPPoE/serial/MAC) no OZmap
+    potencia: potencia,               // sinal da ONU → potencyRead
+    endereco: (dadosAtual && ((dadosAtual.contrato && dadosAtual.contrato.endereco) || (dadosAtual.cliente && dadosAtual.cliente.endereco))) || null,
+    cep:      (dadosAtual && dadosAtual.cliente && dadosAtual.cliente.cep) || null
+  };
+  console.log('[OZmap criar payload]', payload);
+  var podeGravar = true; // liberado geral — cria para qualquer login não mapeado
+  var ov=document.createElement('div');
+  ov.style.cssText='position:fixed;inset:0;z-index:500;background:rgba(0,0,0,.78);display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML='<div style="background:var(--bg2);border:1px solid var(--b2);border-radius:10px;padding:18px;max-width:380px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.6)">'
+    +'<h3 style="font-family:var(--font-head);color:var(--acc);margin-bottom:10px">📋 Revisão — criar no OZmap</h3>'
+    +'<div style="font-size:12px;color:var(--tx);line-height:1.8">'
+    +'CTO: <strong>'+st.ctoSel.nome+'</strong><br>'
+    +'Postes no caminho: <strong>'+drop_poles.length+'</strong><br>'
+    +'Cliente (code): <strong>'+st.login_id+'</strong><br>'
+    +'Coords: <strong>'+st.cliente.lat.toFixed(6)+', '+st.cliente.lng.toFixed(6)+'</strong><br>'
+    +'ONU: <strong>'+([onu.pppoe,onu.serial,onu.mac].filter(Boolean).join(' · ')||'—')+'</strong><br>'
+    +'Endereço: <strong>'+((payload.endereco||'—'))+'</strong><br>'
+    +'Potência: <strong>'+(potencia!=null?potencia+' dBm':'—')+'</strong><br>'
+    +'Estado: <strong>Certificado</strong>'
+    +'</div>'
+    +'<div style="font-size:10px;color:var(--y);margin:12px 0">⚠ Ao confirmar, <strong>CRIA de verdade</strong> no OZmap. Dá pra desfazer logo em seguida.</div>'
+    +'<div id="oz-prev-msg" style="font-size:11px;margin:4px 0;min-height:14px"></div>'
+    +'<div style="display:flex;gap:8px;justify-content:flex-end" id="oz-prev-btns">'
+    +'<button class="btn-sm btn-gray" id="oz-prev-fechar">Fechar</button>'
+    +(podeGravar?'<button class="btn-sm btn-blue" id="oz-prev-criar">✅ Criar no OZmap</button>':'')
+    +'</div></div>';
+  document.body.appendChild(ov);
+  var fechar=function(){ ov.remove(); };
+  ov.querySelector('#oz-prev-fechar').onclick=fechar;
+  ov.addEventListener('click', function(e){ if(e.target===ov) fechar(); });
+  var msg=ov.querySelector('#oz-prev-msg');
+  var btnCriar=ov.querySelector('#oz-prev-criar');
+  if (btnCriar) btnCriar.onclick=async function(){
+    btnCriar.disabled=true; btnCriar.textContent='⏳ Criando...'; msg.textContent='';
+    try {
+      var r=await fetch(WEBHOOK_OZMAP_CRIAR,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(x){return x.json();});
+      if (!r || !r.ok){ msg.style.color='var(--r)'; msg.textContent='❌ '+((r&&r.erro)||'Falha ao criar'); btnCriar.disabled=false; btnCriar.textContent='✅ Criar no OZmap'; return; }
+      var pid=r.property_id;
+      if (r.conectado===false){ msg.style.color='var(--y)'; msg.textContent='✅ Criado · CTO sem porta livre → '+(r.pendencia?'enviado pro O&M revisar/liberar a porta':'avise o O&M')+' · id: '+(pid||'—'); }
+      else { msg.style.color='var(--g)'; msg.textContent='✅ Criado e conectado na porta · id: '+(pid||'—'); }
+      var btns=ov.querySelector('#oz-prev-btns');
+      btns.innerHTML='<button class="btn-sm btn-gray" id="oz-prev-fechar2">Fechar</button>'+(pid?'<button class="btn-sm btn-red" id="oz-prev-undo">↩ Desfazer (apagar)</button>':'');
+      ov.querySelector('#oz-prev-fechar2').onclick=function(){ fechar(); fecharMapaOZmap(); if(dadosAtual&&dadosAtual.logins) buscarOZmap(dadosAtual.logins).catch(function(){}); };
+      var undo=ov.querySelector('#oz-prev-undo');
+      if (undo) undo.onclick=async function(){
+        undo.disabled=true; undo.textContent='⏳ Apagando...';
+        try {
+          var r2=await fetch(WEBHOOK_OZMAP_CRIAR,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({acao:'apagar',property_id:pid})}).then(function(x){return x.json();});
+          if (r2 && r2.ok){ msg.style.color='var(--tx2)'; msg.textContent='↩ Desfeito (apagado no OZmap).'; undo.remove(); }
+          else { msg.style.color='var(--r)'; msg.textContent='❌ '+((r2&&r2.erro)||'Falha ao apagar'); undo.disabled=false; undo.textContent='↩ Desfazer (apagar)'; }
+        } catch(e){ msg.style.color='var(--r)'; msg.textContent='❌ '+(e.message||'erro'); undo.disabled=false; undo.textContent='↩ Desfazer (apagar)'; }
+      };
+    } catch(e){ msg.style.color='var(--r)'; msg.textContent='❌ '+(e.message||'erro'); btnCriar.disabled=false; btnCriar.textContent='✅ Criar no OZmap'; }
+  };
+}
+async function _ozCarregarArea(lat, lng){
+  var st=_ozEstado; if(!st||!st.map) return; var map=st.map;
+  _ozStatus('Buscando CTOs e postes do OZmap...');
+  if (st.layerBase){ try{ map.removeLayer(st.layerBase); }catch(e){} }
+  st.layerBase=L.layerGroup().addTo(map);
+  st.posteMarkers={}; st.caixaMarkers={};
+  try {
+    var res=await fetch(WEBHOOK_OZMAP_MAPA,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lat:lat,lng:lng,radius:500})});
+    var d=await res.json();
+    if (!d||!d.ok){ _ozStatus('❌ Erro ao carregar o mapa do OZmap'); return; }
+    st.caixas=d.caixas||[]; st.postes=d.postes||[];
+    st.postes.forEach(function(p){
+      if(!p.coords) return;
+      var m=L.circleMarker([p.coords[1],p.coords[0]],{radius:5,color:'#8aa4d0',weight:1,fillColor:'#8aa4d0',fillOpacity:.6,bubblingMouseEvents:false});
+      m.addTo(st.layerBase); m.bindTooltip('poste');
+      m.on('click', function(){ _ozClicarPoste(p, m); });
+      st.posteMarkers[p.id]=m;
+    });
+    var cli=st.cliente; // {lat,lng} p/ calcular distância da caixa até o cliente
+    var nReal=0, nPad=0;
+    st.caixas.forEach(function(cx){
+      if(!cx.coords) return;
+      var tipo=(cx.tipo||'');
+      // Caixa REAL de campo = tipo com splitter (CTO_1x8, CD_1x8...). Tipo "CTO" puro = PADRÃO/template → NÃO existe em campo: oculta.
+      var real=/_/.test(tipo);
+      if(!real){ nPad++; return; }
+      nReal++;
+      var impl=cx.implantada!==false;              // implantada = já ativa; planejada = laranja + aviso
+      var isCTO=tipo.toUpperCase().indexOf('CTO')===0;
+      var cor = !impl ? '#f59e0b' : (isCTO?'#00c4ff':'#b060ff');
+      var m=L.circleMarker([cx.coords[1],cx.coords[0]],{radius:impl?9:7,color:cor,weight:2,fillColor:cor,fillOpacity:impl?.7:.4,bubblingMouseEvents:false});
+      m._ozR=impl?9:7;
+      m.addTo(st.layerBase);
+      var dist = cli ? ' · '+_ozDist(cli.lat,cli.lng,cx.coords[1],cx.coords[0])+'m' : '';
+      if (impl) m.bindTooltip(cx.nome+dist, {permanent:true, direction:'top', offset:[0,-8], className:'oz-cto-lbl'});
+      else      m.bindTooltip(cx.nome+' ⚠planejada'+dist);
+      m.on('click', function(){ _ozSelecionarCTO(cx, m); });
+      st.caixaMarkers[cx.id]=m;
+    });
+    _ozRecolorPostes(); // mantém verdes os postes que já estão na rota
+    var info=document.getElementById('ozmap-mapa-info'); if(info) info.textContent=nReal+' CTOs reais · '+(st.postes.length)+' postes'+(nPad?' · '+nPad+' padrão ocultas':'');
+    _ozStatus(st.statusBase || '1) CTO  2) postes  3) casa do cliente');
+    setTimeout(function(){ try{map.invalidateSize();}catch(e){} },150);
+  } catch(e){ _ozStatus('❌ '+(e.message||'erro')); }
+}
+window.abrirMapaOZmap = async function(login_id, login){
+  var modal=document.getElementById('ozmap-mapa-modal');
+  if (!modal){
+    modal=document.createElement('div');
+    modal.id='ozmap-mapa-modal';
+    modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.9);z-index:400;display:flex;flex-direction:column';
+    modal.innerHTML=''
+      +'<style>.oz-cto-lbl{background:rgba(0,0,0,.72);color:#fff;border:1px solid #00c4ff;border-radius:4px;padding:1px 5px;font-size:10px;font-weight:700;box-shadow:none}.oz-cto-lbl:before{display:none}</style>'
+      +'<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg2);border-bottom:1px solid var(--b)">'
+      +'  <strong style="font-family:var(--font-head);color:var(--acc);flex:1">🗺️ Mapear no OZmap</strong>'
+      +'  <span id="ozmap-mapa-info" style="font-size:11px;color:var(--tx2)"></span>'
+      +'  <button class="btn-sm btn-gray" id="ozmap-mapa-fechar">✕</button>'
+      +'</div>'
+      +'<div id="ozmap-mapa-canvas" style="flex:1;min-height:0"></div>'
+      +'<div style="padding:8px 12px;background:var(--bg2);border-top:1px solid var(--b);display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+      +'  <input id="ozmap-mapa-busca" placeholder="🔎 CTO (ex: 637)" style="width:120px;padding:5px 8px;font-size:12px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx)">'
+      +'  <span id="ozmap-mapa-status" style="flex:1;min-width:140px;font-size:11px;color:var(--tx2)">Carregando...</span>'
+      +'  <button class="btn-sm btn-gray" id="ozmap-mapa-recarregar" title="Recarregar CTOs/postes na área que está vendo">↻ CTOs aqui</button>'
+      +'  <button class="btn-sm btn-gray" id="ozmap-mapa-desfazer">↶ Desfazer</button>'
+      +'  <button class="btn-sm btn-gray" id="ozmap-mapa-limpar">🗑 Limpar</button>'
+      +'  <button class="btn-sm btn-blue" id="ozmap-mapa-salvar">💾 Ver dados p/ criar</button>'
+      +'</div>';
+    document.body.appendChild(modal);
+    modal.querySelector('#ozmap-mapa-fechar').onclick=fecharMapaOZmap;
+    modal.querySelector('#ozmap-mapa-desfazer').onclick=_ozDesfazer;
+    modal.querySelector('#ozmap-mapa-limpar').onclick=_ozLimpar;
+    modal.querySelector('#ozmap-mapa-salvar').onclick=_ozSalvarPreview;
+    modal.querySelector('#ozmap-mapa-recarregar').onclick=function(){ var st=_ozEstado; if(st&&st.map){ var c=st.map.getCenter(); _ozCarregarArea(c.lat,c.lng); } };
+    var busca=modal.querySelector('#ozmap-mapa-busca');
+    if(busca){ busca.addEventListener('keydown',function(e){ if(e.key==='Enter'){ e.preventDefault(); _ozBuscarCTO(busca.value); } }); busca.addEventListener('change',function(){ _ozBuscarCTO(busca.value); }); }
+  }
+  modal.style.display='flex';
+  _ozStatus('Carregando mapa...');
+  try { await _carregarLeaflet(); } catch(e){ _ozStatus('❌ '+e.message); return; }
+
+  // Centro: coordenada do CLIENTE no IXC (radusuarios) → GPS do técnico → fallback área padrão
+  var center=null, clienteIXC=null, centerSource='padrao';
+  _ozStatus('Localizando o cliente no IXC...');
+  try {
+    var rr=await ixcGet('radusuarios', { qtype:'radusuarios.id', query:String(login_id), oper:'=', page:'1', rp:'1', sortname:'radusuarios.id', sortorder:'asc' });
+    var reg=rr && rr.registros && rr.registros[0];
+    if (reg){ var c=_ozCoord(reg.latitude,reg.longitude)||_ozCoordStr(reg.complemento)||_ozCoordStr(reg.referencia); if(c){ center=[c[0],c[1]]; clienteIXC=c; centerSource='cliente'; } }
+  } catch(e){}
+  if (!center){ try { var pos=await new Promise(function(res,rej){ navigator.geolocation.getCurrentPosition(res,rej,{timeout:5000,maximumAge:60000,enableHighAccuracy:true}); }); center=[pos.coords.latitude,pos.coords.longitude]; centerSource='gps'; } catch(e){} }
+  if (!center) center=[-6.09853457,-49.86056908];
+
+  var canvas=modal.querySelector('#ozmap-mapa-canvas'); canvas.innerHTML='';
+  var map=L.map(canvas).setView(center,18);
+  // Satélite Google (mesmo do OZmap; lyrs=y = satélite + nomes de rua) + toggle p/ Ruas
+  var satt=L.tileLayer('https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',{maxZoom:21,subdomains:['0','1','2','3'],attribution:'© Google'}).addTo(map);
+  var ruas=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:20,attribution:'© OpenStreetMap'});
+  L.control.layers({'Satélite':satt,'Ruas':ruas},null,{position:'topright'}).addTo(map);
+  _ozEstado={ login_id:login_id, login:login, map:map, caixas:[], postes:[], posteMarkers:{}, caixaMarkers:{}, layerBase:null, statusBase:'', ctoSel:null, _ctoMarker:null, rota:[], cliente:null, polyline:null, clienteMarker:null };
+  // Clique em espaço vazio = marca/move a casa do cliente
+  map.on('click', function(e){ _ozSetCliente(e.latlng); });
+  // Corrige "clique deslocado" (mobile): recalcula o tamanho do mapa após o layout fechar
+  _ozEstado._fix=function(){ try{ map.invalidateSize(true); }catch(e){} };
+  window.addEventListener('resize', _ozEstado._fix);
+  window.addEventListener('orientationchange', _ozEstado._fix);
+  requestAnimationFrame(_ozEstado._fix);
+  setTimeout(_ozEstado._fix,120); setTimeout(_ozEstado._fix,450); setTimeout(_ozEstado._fix,1000);
+  // Pré-marca a casa: coord do IXC, ou (se veio do GPS) a posição do técnico — o técnico ajusta clicando
+  var preC = clienteIXC || (centerSource==='gps' ? center : null);
+  if (preC){ _ozEstado.cliente={lat:preC[0],lng:preC[1]}; _ozEstado.clienteMarker=L.marker([preC[0],preC[1]]).addTo(map).bindTooltip(centerSource==='cliente'?'Casa do cliente (IXC)':'Sua localização (ajuste)'); }
+  _ozEstado.statusBase=(centerSource==='cliente'?'📍 cliente (IXC)':centerSource==='gps'?'📍 sua localização':'📍 área padrão')+' · clique CTO → postes → casa';
+
+  await _ozCarregarArea(center[0], center[1]);
+};
+
+async function buscarOLT(logins) {
+  try {
+    const OLT_BASE='https://carajas.oltcloud.co/api/v2';
+    const oltSessao = await new Promise(r=>chrome.storage.local.get(['olt_sessao'],d=>r(d.olt_sessao||null)));
+    if (!oltSessao) { atualizarOLTStatus('⚙ Configure o acesso OLT Cloud — clique em ⚡ OLT','amarelo'); return; }
+
+    let oltToken='';
+    try {
+      const refreshRes = await fetch('https://carajas.oltcloud.co/api/token/refresh',{
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({refresh:oltSessao.refresh})
+      });
+      if (refreshRes.ok) { const rd=await refreshRes.json(); oltToken=rd?.access||''; }
+    } catch(e) {}
+
+    if (!oltToken) {
+      try {
+        const loginRes = await fetch('https://carajas.oltcloud.co/api/token',{
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({username:oltSessao.username,password:oltSessao.password})
+        });
+        if (!loginRes.ok) { atualizarOLTStatus(`❌ Falha no login OLT (HTTP ${loginRes.status})`,'vermelho'); return; }
+        const ld=await loginRes.json(); oltToken=ld?.access||'';
+        if (oltToken&&ld?.refresh) await new Promise(r=>chrome.storage.local.set({olt_sessao:{...oltSessao,access:oltToken,refresh:ld.refresh}},r));
+      } catch(e) { atualizarOLTStatus(`❌ Erro de conexão OLT: ${e.message}`,'vermelho'); return; }
+    }
+
+    if (!oltToken) { atualizarOLTStatus('❌ Token OLT Cloud inválido','vermelho'); return; }
+
+    const hdrs={'Authorization':`Bearer ${oltToken}`,'Content-Type':'application/json'};
+    const olt_cloud={};
+    const erros=[];
+
+    for (const l of logins) {
+      try {
+        const pppoe=encodeURIComponent(l.login);
+        const resEq=await fetch(`${OLT_BASE}/ftth/equipment/list?client_pppoe=${pppoe}`,{headers:hdrs});
+        if (!resEq.ok) { erros.push(`${l.login}: HTTP ${resEq.status}`); continue; }
+        const eqData=await resEq.json();
+        const eq=eqData?.results?.[0];
+        if (!eq?.id) { erros.push(`${l.login}: não encontrado no OLT Cloud`); continue; }
+
+        // Buscar detalhes + alertas + histórico + PON realtime em paralelo
+        // v1.7.5 — wrapper que silencia 404 (esperado quando não há alertas/dados)
+        const fetchSilencioso = (url) => fetch(url, {headers:hdrs})
+          .then(r => r.ok ? r.json() : null)
+          .catch(() => null);
+        const [resDetail,resAlerts,resHistory,resDisable,resRealtime] = await Promise.allSettled([
+          fetchSilencioso(`${OLT_BASE}/ftth/equipment/${eq.id}`),
+          fetchSilencioso(`${OLT_BASE}/client/device_alert?pppoe=${pppoe}`),
+          fetchSilencioso(`${OLT_BASE}/ftth/equipment/${eq.id}/status_logs`),
+          fetchSilencioso(`${OLT_BASE}/ftth/equipment/check_disable/${eq.id}`),
+          Promise.resolve(null) // realtime será buscado com dados do equipment
+        ]);
+
+        const d=resDetail.status==='fulfilled'?resDetail.value?.equipment:null;
+        if (!d) { erros.push(`${l.login}: sem detalhes`); continue; }
+
+        // ── Caixa (CTO): validar IXC × OLT Cloud ──────────────────────────
+        // No OLT Cloud a caixa é um "Box"; a associação ONU↔Box é MANUAL, então
+        // pode divergir do IXC. Achamos o Box cujo occupation tem este pppoe.
+        let caixaOlt = null;
+        try {
+          const pppoeL = (l.login || '').toLowerCase();
+          const matchBox = (boxes) => {
+            for (const b of (boxes || [])) {
+              for (const o of (b.occupation || [])) {
+                if ((o.pppoe || '').toLowerCase() === pppoeL) return { b, o };
+              }
+            }
+            return null;
+          };
+          const getJson = async (url) => { try { const r = await fetch(url, { headers: hdrs }); return r.ok ? await r.json() : null; } catch (_) { return null; } };
+          let hit = null;
+          if (d.pon_id) { // caminho rápido: só as caixas do mesmo PON
+            const j = await getJson(`${OLT_BASE}/box/list?pon_id=${encodeURIComponent(d.pon_id)}&page_size=1000`);
+            hit = matchBox(j?.results);
+          }
+          // (removido) fallback que varria até 15 páginas de 1.000 caixas no OLT Cloud —
+          // causava dezenas de chamadas lentas (6-9s). A CTO autoritativa vem do OZmap;
+          // aqui mantemos só o caminho rápido por PON (1 chamada).
+          if (hit) caixaOlt = { id: hit.b.id, name: hit.b.name, porta: hit.o.port };
+        } catch (e) {}
+
+        // extrai o código da caixa e normaliza (CT/CTO/CX, espaços, zeros à esquerda) -> "CT<num>"
+        const codCaixa = (txt) => { const m = String(txt || '').toUpperCase().match(/C[TX]O?\s*0*(\d+)/); return m ? ('CT' + m[1]) : null; };
+        const ixcCod = codCaixa(l.caixa_ftth);
+        const oltCod = caixaOlt ? codCaixa(caixaOlt.name) : null;
+        const caixaValidada = !!(ixcCod && oltCod);
+        const caixaConflito = caixaValidada && ixcCod !== oltCod;
+
+        // PON realtime com dados do equipment
+        let realtimeData=null;
+        if (d.olt_id&&d.slot&&d.pon) {
+          try {
+            const rr=await fetch(`${OLT_BASE}/ftth/equipment/realtime?olt_id=${d.olt_id}&slot=${d.slot}&pon=${d.pon}`,{headers:hdrs});
+            if (rr.ok) realtimeData=await rr.json();
+          } catch(e) {}
+        }
+
+        const alertsData  = resAlerts.status==='fulfilled'  ? resAlerts.value  : null;
+        const historyData = resHistory.status==='fulfilled' ? resHistory.value  : null;
+        const disableData = resDisable.status==='fulfilled' ? resDisable.value  : null;
+
+        const alertas=(alertsData?.alerts||[]).filter(a=>!a.ignored).slice(0,5).map(a=>({
+          tipo:a.alert_type, descricao:a.description, inicio:a.initial_date,
+          fim:a.end_date, cto:a.cto_name||null
+        }));
+
+        const historico_status=(historyData?.results||[]).slice(0,20).map(h=>({data:h.date,status:h.status}));
+        const sem_energia=historico_status.filter(h=>h.status==='Sem Energia').length;
+
+        const pon_realtime=realtimeData?.results||[];
+        const pon_total=pon_realtime.length;
+        const pon_online=pon_realtime.filter(o=>o.status==='Online').length;
+        const pon_offline=pon_total-pon_online;
+        const problema_coletivo=pon_total>0&&(pon_offline/pon_total)>0.3;
+
+        olt_cloud[l.id]={
+          eq_id:eq.id||null,
+          status:d.status, modelo:d.model||null, serial:d.serial_number||null,
+          olt:d.olt||null, olt_id:d.olt_id||null, slot:d.slot||null, pon:d.pon||null,
+          slot_pon_onu:d['slot/pon/onu_id']||null,
+          sinal_onu:d.device_rx??null, sinal_olt:d.olt_rx??null,
+          temperatura:d.optical_module_temperature??null, tensao:d.optical_module_volt??null,
+          corrente:d.optical_module_current??null, distancia:d.optical_module_distance??null,
+          ultimo_alarme:d.optical_module_last_alarm||null, uptime:d.optical_module_uptime||null,
+          ultima_desconexao:d.last_disconnection||null, online_desde:d.uptime_since||null,
+          intermitencia:d.optical_module_intermittency||false,
+          onu_desabilitada:disableData?.disable===true,
+          alertas, historico_status, sem_energia,
+          pon_total, pon_online, pon_offline, problema_coletivo,
+          caixa_ixc_raw:l.caixa_ftth||null, caixa_ixc_cod:ixcCod,
+          caixa_olt:caixaOlt, caixa_olt_cod:oltCod,
+          caixa_validada:caixaValidada, caixa_conflito:caixaConflito
+        };
+      } catch(e) { erros.push(`${l.login}: ${e.message}`); }
+    }
+
+    // Salvar olt_cloud em dadosAtual para o copiar tudo
+    if (dadosAtual) dadosAtual._olt_cloud = olt_cloud;
+
+    // Mostrar erros + botão fallback IXC
+    if (erros.length) {
+      erros.forEach(erro=>{
+        logins.forEach((l,i)=>{
+          if (erro.includes(l.login)) {
+            const bodyEl=document.getElementById(`body-login-${i}`);
+            if (!bodyEl) return;
+            const s=bodyEl.querySelector('.olt-section');
+            if (s) {
+              s.innerHTML=`<div class="sec-title">OLT Cloud</div>
+                <div class="olt-status-msg vermelho">❌ ${erro}</div>
+                <div class="btns" style="margin-top:6px">
+                  <button class="btn-sm btn-yellow" data-action="potencia-onu" data-p="${l.id}" data-p2="${l.login}">📡 Consultar potência via IXC</button>
+                </div>`;
+            }
+          }
+        });
+      });
+    }
+
+    // Atualizar cards
+    logins.forEach((l,i)=>{
+      const olt=olt_cloud[l.id];
+      if (!olt) return;
+      const bodyEl=document.getElementById(`body-login-${i}`);
+      if (!bodyEl) return;
+      let s=bodyEl.querySelector('.olt-section');
+      if (!s) { s=document.createElement('div'); s.className='olt-section'; const btns=bodyEl.querySelector('.btns'); if(btns)bodyEl.insertBefore(s,btns); else bodyEl.appendChild(s); }
+
+      const sid=`s${i}`;
+
+      // Adicionar botão reboot agora que temos os dados da OLT
+      const rebootSlot = document.getElementById(`btn-reboot-${i}`);
+      if (rebootSlot && olt.eq_id) {
+        rebootSlot.innerHTML = `<button class="btn-sm btn-yellow" data-action="reboot-onu" data-p="${olt.eq_id||''}" data-p2="${l.login}" data-p3="${dadosAtual?.contrato_id||''}">🔄 Reboot ONU</button>`;
+      }
+
+      let oltHtml='';
+      // ── Validação de caixa (CTO): IXC × OLT Cloud ──
+      const escCx=(t)=>String(t==null?'':t).replace(/[<>]/g,'');
+      if (olt.caixa_conflito) {
+        oltHtml+=`<div class="olt-alarme vermelho" style="border:2px solid #e05252;border-radius:8px;padding:14px 16px;margin-bottom:8px">
+          <div style="font-size:17px;font-weight:800;letter-spacing:.3px">⚠️ CONFLITO DE CAIXA</div>
+          <div style="margin-top:8px;font-weight:800;font-size:20px">IXC: ${escCx(olt.caixa_ixc_cod)} &nbsp;×&nbsp; OLT Cloud: ${escCx(olt.caixa_olt_cod)}</div>
+          <div style="margin-top:8px;font-weight:600;opacity:.95;font-size:13px;line-height:1.5">
+            IXC: ${escCx(olt.caixa_ixc_raw)}<br>OLT: ${escCx(olt.caixa_olt&&olt.caixa_olt.name)}${olt.caixa_olt&&olt.caixa_olt.porta?` (porta ${escCx(olt.caixa_olt.porta)})`:''}
+          </div>
+          <div style="margin-top:8px;font-weight:700;font-size:13px">As duas bases devem apontar a mesma caixa. Verifique e corrija.</div>
+        </div>`;
+      } else if (olt.caixa_validada) {
+        oltHtml+=`<div class="olt-alarme verde" style="font-size:14px;font-weight:700;padding:8px 12px">✓ Caixa confere nas duas bases (${escCx(olt.caixa_ixc_cod)})</div>`;
+      } else if (olt.caixa_ixc_cod || olt.caixa_olt) {
+        oltHtml+=`<div class="olt-alarme amarelo" style="font-size:13px;font-weight:600;padding:8px 12px">🔎 Caixa não validada${olt.caixa_olt?'':' (não localizada no inventário do OLT Cloud)'}${olt.caixa_ixc_cod?' — IXC: '+escCx(olt.caixa_ixc_cod):''}</div>`;
+      }
+      oltHtml+=secTCopy('OLT Cloud — Sinal em tempo real','olt-sinal-'+sid)+`<div id="olt-sinal-${sid}">`;
+      oltHtml+=`<div class="olt-grid">
+        <div class="olt-item ${sinalCls(olt.sinal_onu)}"><div class="olt-label">RX ONU</div><div class="olt-val">${fmtOLT(olt.sinal_onu,2,' dBm')}</div></div>
+        <div class="olt-item ${sinalCls(olt.sinal_olt)}"><div class="olt-label">RX OLT</div><div class="olt-val">${fmtOLT(olt.sinal_olt,2,' dBm')}</div></div>
+        <div class="olt-item ${tempCls(olt.temperatura)}"><div class="olt-label">Temperatura</div><div class="olt-val">${fmtOLT(olt.temperatura,1,'°C')}</div></div>
+        <div class="olt-item cinza"><div class="olt-label">Tensão</div><div class="olt-val">${fmtOLT(olt.tensao,2,' V')}</div></div>
+        <div class="olt-item cinza"><div class="olt-label">Corrente</div><div class="olt-val">${fmtOLT(olt.corrente,1,' mA')}</div></div>
+        <div class="olt-item cinza"><div class="olt-label">Distância</div><div class="olt-val">${fmtOLT(olt.distancia,0,' m')}</div></div>
+      </div>`;
+      oltHtml+='</div>';
+
+      oltHtml+=secTCopy('Status OLT','olt-status-'+sid)+`<div id="olt-status-${sid}">`;
+      if (olt.onu_desabilitada) oltHtml+='<div class="olt-alarme vermelho">🚫 ONU desabilitada na OLT</div>';
+      if (olt.ultimo_alarme) { const clr=olt.ultimo_alarme.toLowerCase().includes('energia')||olt.ultimo_alarme.toLowerCase().includes('loss')?'vermelho':'amarelo'; oltHtml+=`<div class="olt-alarme ${clr}">⚡ ${olt.ultimo_alarme}</div>`; }
+      if (olt.intermitencia) oltHtml+='<div class="olt-alarme vermelho">⚠ Intermitência detectada</div>';
+      if (olt.pon_total>0) { const pct=Math.round((olt.pon_offline/olt.pon_total)*100); oltHtml+=`<div class="olt-alarme ${olt.problema_coletivo?'vermelho':'verde'}">📡 PON: ${olt.pon_online}/${olt.pon_total} online${olt.problema_coletivo?' — ⚠ '+pct+'% offline':''}</div>`; }
+
+      oltHtml+=mrow('Status OLT',olt.status,bc(olt.status));
+      oltHtml+=mrow('Modelo',olt.modelo);
+      oltHtml+=mrow('OLT',olt.olt);
+      oltHtml+=mrow('Slot/PON/ONU',olt.slot_pon_onu);
+      oltHtml+=mrow('Online desde',fmt(olt.online_desde));
+      oltHtml+=mrow('Última descon.',fmt(olt.ultima_desconexao));
+
+      oltHtml+='</div>';
+      if (olt.historico_status?.length>0) {
+        oltHtml+=secTCopy('Histórico de status ONU','olt-hist-'+sid)+`<div id="olt-hist-${sid}"`+'>';
+        oltHtml+='<div style="display:flex;flex-wrap:wrap;gap:3px;margin:4px 0">';
+        olt.historico_status.slice(0,15).forEach(h=>{
+          const isOn=h.status==='Online',isSE=h.status==='Sem Energia';
+          const bg=isOn?'#0a2318':isSE?'#220a0a':'#221600';
+          const brd=isOn?'#1a5c3a':isSE?'#5c1a1a':'#5c3e00';
+          const clr=isOn?'#3bc48a':isSE?'#e05252':'#f0a500';
+          oltHtml+=`<span title="${h.data}" style="font-size:9px;padding:2px 6px;border-radius:10px;background:${bg};border:1px solid ${brd};color:${clr}">${h.status}</span>`;
+        });
+        oltHtml+='</div>';
+        if (olt.sem_energia>0) oltHtml+=`<div style="font-size:10px;color:#f0a500;margin-top:2px">⚡ ${olt.sem_energia} evento(s) Sem Energia</div>`;
+        oltHtml+='</div>';
+      }
+
+      const alertasAtivos=olt.alertas?.filter(a=>!a.ignorado)||[];
+      if (alertasAtivos.length>0) {
+        oltHtml+=secTCopy('Alertas OLT Cloud','olt-alert-'+sid)+`<div id="olt-alert-${sid}"`+'>';
+        alertasAtivos.forEach(a=>{
+          const tl={cto_loss:'CTO Loss',onu_loss:'ONU Loss',pon_loss:'PON Loss',no_power:'Sem Energia'}[a.tipo]||a.tipo;
+          oltHtml+=`<div style="padding:5px 0;border-bottom:1px solid var(--color-border-tertiary);font-size:11px">
+            <div style="font-weight:600;color:#e05252">${tl}${a.cto?' — '+a.cto:''}</div>
+            <div style="opacity:.8;margin-top:1px">${a.descricao||''}</div>
+            <div style="opacity:.6;font-size:10px;margin-top:1px">${a.inicio||''} ${a.fim?'→ '+a.fim:'(em aberto)'}</div>
+          </div>`;
+        });
+        oltHtml+='</div>';
+      }
+
+      s.innerHTML=oltHtml;
+    });
+
+  } catch(e) { console.warn('Erro OLT Cloud:',e); atualizarOLTStatus(`❌ Erro: ${e.message}`,'vermelho'); }
+}
+
+// ── Busca ──────────────────────────────────────
+elInput.addEventListener('keydown', e=>{ if(e.key==='Enter') buscar(); });
+elBtn.addEventListener('click', buscar);
+
+function formatarCPFCNPJ(v) {
+  const n = v.replace(/\D/g,'');
+  if (n.length === 11) return n.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4');
+  if (n.length === 14) return n.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, '$1.$2.$3/$4-$5');
+  return v;
+}
+
+async function buscar() {
+  let v=elInput.value.trim();
+  if (!v) { elInput.focus(); return; }
+  // Normalizar CPF/CNPJ sem pontuação
+  const soNumeros=v.replace(/\D/g,'');
+  if (soNumeros.length===11||soNumeros.length===14) {
+    v = formatarCPFCNPJ(v);
+    elInput.value = v;
+  }
+  setState('loading'); elBtn.disabled=true; elLast.textContent=v;
+  const bcBar = document.getElementById('cliente-ativo');
+  if (bcBar) bcBar.style.display = 'none';
+  try {
+    const ehCPF=soNumeros.length===11||soNumeros.length===14;
+    if (ehCPF) {
+      const res=await fetch(WEBHOOK_CPF,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cpf:v})});
+      if (!res.ok) throw new Error('HTTP '+res.status);
+      const data=await res.json();
+      if (!data.ok) { elErrMsg.textContent=data.erro||'Nenhum cliente encontrado.'; setState('error'); return; }
+      await Logger.registrarLog(sessaoAtual,'CONSULTA_CPF',{detalhes:{cpf:v.replace(/\d/g,'*'),total:data.total}});
+      if (data.total===1) { elInput.value=data.contratos[0].contrato_id; await buscarContrato(data.contratos[0].contrato_id); }
+      else renderSelecao(data.contratos);
+    } else {
+      await buscarContrato(v);
+    }
+  } catch(e) { elErrMsg.textContent='Falha ao conectar.'; setState('error'); console.error(e); }
+  finally { elBtn.disabled=false; }
+}
+
+// ── Cache de consulta (reduz tempo em buscas repetidas) ──
+const CACHE_TTL_MS = 180000; // 3 min
+const _cacheKey = id => 'ixc_cache_' + id;
+function _getCache(id){ return new Promise(r=>chrome.storage.local.get([_cacheKey(id)], d=>r(d[_cacheKey(id)]||null))); }
+function _setCache(id, data){ try{ chrome.storage.local.set({ [_cacheKey(id)]: { ts: Date.now(), data } }); }catch(e){} }
+function invalidarCache(id){ try{ chrome.storage.local.remove(_cacheKey(id)); }catch(e){} }
+
+function indicadorTempo(ms, doCache) {
+  const txt = doCache ? '⚡ cache' : '⚡ ' + (ms/1000).toFixed(2) + 's';
+  const el = document.createElement('div');
+  el.id = 'tempo-resp';
+  el.style.cssText = 'text-align:right;font-size:9px;color:var(--tx3);margin:0 2px 3px;font-family:var(--font-mono);opacity:.65';
+  el.textContent = txt;
+  elRes.prepend(el);
+}
+
+function indicadorCache(id, ts) {
+  const seg = Math.max(0, Math.round((Date.now()-ts)/1000));
+  const idade = seg < 60 ? seg+'s' : Math.round(seg/60)+'min';
+  const bar = document.createElement('div');
+  bar.id = 'cache-bar';
+  bar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;background:var(--bg3);border:1px solid var(--b2);border-radius:6px;padding:5px 10px;margin-bottom:6px;font-size:10px;color:var(--tx3)';
+  bar.innerHTML = `<span>⚡ Dados em cache (há ${idade})</span><button class="btn-sm btn-gray" data-action="atualizar-cache" data-p="${id}" style="font-size:10px;padding:2px 8px">↻ Atualizar</button>`;
+  elRes.prepend(bar);
+}
+
+async function buscarContrato(id, force=false) {
+  if (!force) {
+    const c = await _getCache(id);
+    if (c && c.data?.ok && (Date.now()-c.ts) < CACHE_TTL_MS) {
+      render(c.data);
+      indicadorCache(id, c.ts);
+      indicadorTempo(0, true);
+      return;
+    }
+  }
+  const t0 = performance.now();
+  const res=await fetch(WEBHOOK_CONTRATO,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contrato_id:String(id)})});
+  if (!res.ok) throw new Error('HTTP '+res.status);
+  const data=await res.json();
+  const ms = performance.now() - t0;
+  if (!data.ok) { elErrMsg.textContent=data.erro||'Contrato não encontrado.'; setState('error'); return; }
+  _setCache(id, data);
+  render(data);
+  indicadorTempo(ms, false);
+}
+
+// ── Start ──────────────────────────────────────
+init();
+
+// ═══════════════════════════════════════════════
+// v1.5 — Novas ações
+// ═══════════════════════════════════════════════
+
+// ── Enviar boleto por e-mail ──────────────────
+window.enviarBoletoEmail = function(titulo_id, email) {
+  const dest = email || dadosAtual?.cliente?.email || '(e-mail cadastrado no IXC)';
+  confirmar('Enviar boleto por e-mail',
+    `Confirma o envio do boleto #${titulo_id} para <strong>${dest}</strong>?<br><br><span style="font-size:10px;color:var(--tx3)">O boleto será enviado para o e-mail cadastrado na ficha do cliente. Para alterar, edite a ficha no IXC antes.</span>`,
+    async () => {
+      try {
+        toast('Enviando boleto...','');
+        const res = await fetch(WEBHOOK_ACOES, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            acao: 'enviar_boleto_email', usar_token_master: usarTokenMaster(),
+            titulo_id: String(titulo_id),
+            token: sessaoAtual?.token
+          })
+        }).then(r => r.json());
+
+        // v1.8.4 — detecção de sucesso ampla (get_boleto tipo 'mail' nem sempre devolve marcador)
+        const tipoEnv = (res?.type || res?.tipo || '').toLowerCase();
+        const msgEnv  = res?.mensagem || res?.message || res?.msg || '';
+        const okEnv   = res?.ok === true || tipoEnv==='success' || tipoEnv==='sucesso'
+                      || (msgEnv && !tipoEnv && !msgEnv.toLowerCase().includes('erro') && !msgEnv.toLowerCase().includes('falha'));
+
+        if (okEnv) {
+          await Logger.registrarLog(sessaoAtual,'ENVIAR_BOLETO_EMAIL',{
+            contrato_id: dadosAtual?.contrato_id,
+            cliente_nome: dadosAtual?.cliente?.nome,
+            cliente_id: dadosAtual?.cliente?.id,
+            sucesso: true,
+            detalhes: { titulo_id, email: dest, resultado: msgEnv }
+          });
+          toast('✓ ' + (msgEnv||'Boleto enviado!'),'ok');
+        } else {
+          await Logger.registrarLog(sessaoAtual,'ENVIAR_BOLETO_EMAIL',{
+            contrato_id: dadosAtual?.contrato_id, sucesso: false,
+            detalhes: { titulo_id }, erro: msgEnv || res?.erro
+          });
+          toast('❌ ' + (msgEnv||res?.erro||'Falha ao enviar'),'err');
+        }
+      } catch(e) {
+        toast(traduzirErro(e), 'err');
+      }
+    }
+  );
+};
+
+// ── Consultar potência ONU via IXC (fallback OLT Cloud) ──
+window.consultarPotenciaONU = async function(login_id, login) {
+  toast('Consultando IXC...','');
+  try {
+    const res = await fetch(WEBHOOK_ACOES, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        acao: 'botao_potencia_onu',
+        login_id: String(login_id),
+        token: sessaoAtual?.token
+      })
+    }).then(r => r.json());
+
+    if (!res?.ok) { toast('❌ '+(res?.erro||'Falha'),'err'); return; }
+
+    // Renderizar resultado em modal simples
+    const r = res.resultado || {};
+    const m = document.createElement('div');
+    m.className='confirm-modal';
+    let html = `<div class="confirm-box" style="max-width:380px"><h3>📡 Potência ONU — ${login}</h3>`;
+    html += '<div style="font-family:var(--font-mono);font-size:11px;color:var(--tx);background:var(--bg3);padding:10px;border-radius:6px;border:1px solid var(--b);max-height:400px;overflow-y:auto;white-space:pre-wrap;word-break:break-word">';
+    if (typeof r === 'string') {
+      html += r;
+    } else {
+      html += JSON.stringify(r, null, 2);
+    }
+    html += '</div><div class="confirm-btns"><button class="btn-sm btn-blue" id="pot-fechar">Fechar</button></div></div>';
+    m.innerHTML = html;
+    document.body.appendChild(m);
+    m.querySelector('#pot-fechar').onclick = () => m.remove();
+  } catch(e) {
+    toast(traduzirErro(e), 'err');
+  }
+};
+
+// ── Modal de Agendamento OS ───────────────────
+let agendarOsAtual = null;
+let agendarTecSelecionado = null;
+let agendarTecTimeout = null;
+
+window.abrirAgendarOS = function(os_id, assunto) {
+  agendarOsAtual = os_id;
+  agendarTecSelecionado = null;
+  document.getElementById('agendar-info').innerHTML =
+    `OS <strong>#${os_id}</strong> — ${assunto || 'Sem assunto'}`;
+  document.getElementById('agendar-inicio').value = '';
+  document.getElementById('agendar-fim').value = '';
+  document.getElementById('agendar-tec').value = '';
+  document.getElementById('agendar-tec-list').style.display = 'none';
+  document.getElementById('agendar-tec-list').innerHTML = '';
+  document.getElementById('agendar-tec-selected').innerHTML = '';
+  document.getElementById('agendar-msg').value = '';
+  document.getElementById('agendar-erro').style.display = 'none';
+  document.getElementById('agendar-modal').style.display = 'flex';
+  setTimeout(() => document.getElementById('agendar-inicio').focus(), 100);
+};
+
+document.getElementById('agendar-cancelar').addEventListener('click', () => {
+  document.getElementById('agendar-modal').style.display = 'none';
+  agendarOsAtual = null;
+  agendarTecSelecionado = null;
+});
+
+// Atalhos rápidos de data
+document.querySelectorAll('#agendar-modal .btn-rapido[data-rapido]').forEach(btn => {
+  btn.addEventListener('click', e => {
+    e.preventDefault();
+    const tipo = btn.getAttribute('data-rapido');
+    const d = new Date();
+    if (tipo === 'hoje-tarde') {
+      d.setHours(14, 0, 0, 0);
+    } else if (tipo === 'amanha-manha') {
+      d.setDate(d.getDate()+1); d.setHours(8, 0, 0, 0);
+    } else if (tipo === 'amanha-tarde') {
+      d.setDate(d.getDate()+1); d.setHours(14, 0, 0, 0);
+    }
+    document.getElementById('agendar-inicio').value = toDatetimeLocal(d);
+    // Default fim = +2h
+    const fim = new Date(d.getTime() + 2*60*60*1000);
+    document.getElementById('agendar-fim').value = toDatetimeLocal(fim);
+  });
+});
+
+// Atalhos de duração
+document.querySelectorAll('#agendar-modal .btn-rapido[data-dur]').forEach(btn => {
+  btn.addEventListener('click', e => {
+    e.preventDefault();
+    const minutos = parseInt(btn.getAttribute('data-dur'));
+    const inicioVal = document.getElementById('agendar-inicio').value;
+    if (!inicioVal) { toast('Defina o início primeiro','err'); return; }
+    const inicio = new Date(inicioVal);
+    const fim = new Date(inicio.getTime() + minutos*60*1000);
+    document.getElementById('agendar-fim').value = toDatetimeLocal(fim);
+  });
+});
+
+function toDatetimeLocal(d) {
+  const pad = n => String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// Autocomplete de técnicos — debounce 300ms
+document.getElementById('agendar-tec').addEventListener('input', e => {
+  const termo = e.target.value.trim();
+  agendarTecSelecionado = null;
+  document.getElementById('agendar-tec-selected').innerHTML = '';
+  clearTimeout(agendarTecTimeout);
+  if (termo.length < 2) {
+    document.getElementById('agendar-tec-list').style.display = 'none';
+    return;
+  }
+  agendarTecTimeout = setTimeout(() => buscarTecnicos(termo), 300);
+});
+
+async function buscarTecnicos(termo) {
+  const listEl = document.getElementById('agendar-tec-list');
+  listEl.innerHTML = '<div class="tec-suggest-item" style="color:var(--tx3)">⏳ Buscando...</div>';
+  listEl.style.display = 'block';
+  try {
+    const res = await fetch(WEBHOOK_ACOES, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        acao: 'buscar_tecnicos',
+        extra: { termo },
+        token: sessaoAtual?.token
+      })
+    }).then(r => r.json());
+
+    const tecs = res?.tecnicos || [];
+    if (!tecs.length) {
+      listEl.innerHTML = '<div class="tec-suggest-item" style="color:var(--tx3)">Nenhum técnico encontrado</div>';
+      return;
+    }
+    listEl.innerHTML = tecs.map(t =>
+      `<div class="tec-suggest-item" data-tec-id="${t.id}" data-tec-nome="${t.nome.replace(/"/g,'&quot;')}">
+        ${t.nome}<span class="tec-id">#${t.id}</span>
+      </div>`
+    ).join('');
+  } catch(e) {
+    listEl.innerHTML = `<div class="tec-suggest-item" style="color:var(--r)">Erro: ${e.message}</div>`;
+  }
+}
+
+// Seleção de técnico via clique
+document.getElementById('agendar-tec-list').addEventListener('click', e => {
+  const item = e.target.closest('.tec-suggest-item[data-tec-id]');
+  if (!item) return;
+  const id = item.getAttribute('data-tec-id');
+  const nome = item.getAttribute('data-tec-nome');
+  agendarTecSelecionado = { id, nome };
+  document.getElementById('agendar-tec').value = nome;
+  document.getElementById('agendar-tec-list').style.display = 'none';
+  document.getElementById('agendar-tec-selected').innerHTML =
+    `<div class="tec-selected">✓ ${nome} <button title="Remover">×</button></div>`;
+  document.getElementById('agendar-tec-selected').querySelector('button').onclick = () => {
+    agendarTecSelecionado = null;
+    document.getElementById('agendar-tec').value = '';
+    document.getElementById('agendar-tec-selected').innerHTML = '';
+  };
+});
+
+// Esconder lista ao clicar fora
+document.addEventListener('click', e => {
+  if (!e.target.closest('.tec-suggest-wrap')) {
+    document.getElementById('agendar-tec-list').style.display = 'none';
+  }
+});
+
+// Confirmar agendamento
+document.getElementById('agendar-confirmar').addEventListener('click', async () => {
+  const erroEl = document.getElementById('agendar-erro');
+  erroEl.style.display = 'none';
+
+  const inicio = document.getElementById('agendar-inicio').value;
+  const fim    = document.getElementById('agendar-fim').value;
+  const msg    = document.getElementById('agendar-msg').value.trim();
+
+  if (!inicio || !fim) { erroEl.textContent = 'Preencha início e fim.'; erroEl.style.display=''; return; }
+  if (!agendarTecSelecionado) { erroEl.textContent = 'Selecione um técnico da lista.'; erroEl.style.display=''; return; }
+  if (new Date(fim) <= new Date(inicio)) { erroEl.textContent = 'Fim deve ser depois do início.'; erroEl.style.display=''; return; }
+
+  const data_inicio = inicio.replace('T',' ') + ':00';
+  const data_fim    = fim.replace('T',' ') + ':00';
+
+  const btn = document.getElementById('agendar-confirmar');
+  btn.disabled = true; btn.textContent = 'Agendando...';
+
+  try {
+    const res = await fetch(WEBHOOK_ACOES, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        acao: 'agendar_os', usar_token_master: usarTokenMaster(),
+        os_id: String(agendarOsAtual),
+        extra: {
+          data_inicio,
+          data_fim,
+          id_tecnico: agendarTecSelecionado.id,
+          mensagem: msg
+        },
+        token: sessaoAtual?.token
+      })
+    }).then(r => r.json());
+
+    if (res?.ok) {
+      await Logger.registrarLog(sessaoAtual,'AGENDAR_OS',{
+        contrato_id: dadosAtual?.contrato_id,
+        cliente_nome: dadosAtual?.cliente?.nome,
+        cliente_id: dadosAtual?.cliente?.id,
+        sucesso: true,
+        detalhes: {
+          os_id: agendarOsAtual,
+          data_inicio, data_fim,
+          tecnico_id: agendarTecSelecionado.id,
+          tecnico_nome: agendarTecSelecionado.nome
+        }
+      });
+      toast('✓ OS agendada!','ok');
+      document.getElementById('agendar-modal').style.display = 'none';
+      // Recarregar contrato pra ver a OS atualizada
+      invalidarCache(dadosAtual.contrato_id); setTimeout(() => buscarContrato(dadosAtual.contrato_id, true), 1500);
+    } else {
+      await Logger.registrarLog(sessaoAtual,'AGENDAR_OS',{
+        contrato_id: dadosAtual?.contrato_id, sucesso: false,
+        detalhes: { os_id: agendarOsAtual, usou_master: res?.usou_master }, erro: res?.mensagem || res?.erro
+      });
+      let msgErro = res?.mensagem || res?.erro || 'Falha ao agendar';
+      if (res?.sugestao) msgErro += '\n\n💡 ' + res.sugestao;
+      erroEl.textContent = '❌ ' + msgErro;
+      erroEl.style.display = '';
+    }
+  } catch(e) {
+    erroEl.textContent = 'Erro: ' + traduzirErro(e);
+    erroEl.style.display = '';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '📅 Agendar';
+  }
+});
+
+// ═══════════════════════════════════════════════
+// v1.6 — Toggle de Token + Timer de Sessão
+// ═══════════════════════════════════════════════
+
+const elTokenToggle = document.getElementById('btn-token-toggle');
+const elSessTempo   = document.getElementById('sessao-tempo');
+const elAviso       = document.getElementById('sessao-aviso');
+const elAvisoMin    = document.getElementById('sessao-aviso-min');
+const elBtnEstender = document.getElementById('btn-estender');
+const elBtnAvFechar = document.getElementById('btn-aviso-fechar');
+
+async function carregarToggleToken() {
+  // Carrega preferência salva (default: master)
+  const r = await new Promise(res => chrome.storage.local.get(['ixc_modo_token'], d => res(d.ixc_modo_token)));
+  modoToken = (r === 'meu') ? 'meu' : 'master';
+  atualizarToggleUI();
+}
+
+function atualizarToggleUI() {
+  if (!elTokenToggle) return;
+  if (modoToken === 'master') {
+    elTokenToggle.textContent = '🔓 master';
+    elTokenToggle.classList.remove('modo-meu');
+    elTokenToggle.classList.add('modo-master');
+    elTokenToggle.title = 'Ações executadas com TOKEN MASTER. Clique para usar SEU token (registra como você no IXC).';
+  } else {
+    elTokenToggle.textContent = '👤 ' + (sessaoAtual?.usuario_nome?.split(' ')[0]?.toLowerCase() || 'meu');
+    elTokenToggle.classList.remove('modo-master');
+    elTokenToggle.classList.add('modo-meu');
+    elTokenToggle.title = 'Ações registradas no IXC como VOCÊ. Clique para usar token master (se sua permissão API falhar).';
+  }
+}
+
+if (elTokenToggle) {
+  elTokenToggle.addEventListener('click', async () => {
+    modoToken = (modoToken === 'master') ? 'meu' : 'master';
+    await new Promise(r => chrome.storage.local.set({ ixc_modo_token: modoToken }, r));
+    atualizarToggleUI();
+    if (modoToken === 'meu') {
+      toast('👤 Modo SEU token ativo. Se der erro de permissão, alterne para 🔓 master.','');
+    } else {
+      toast('🔓 Modo MASTER ativo','');
+    }
+  });
+}
+
+// ── Timer de sessão ──────────────────────────
+function iniciarTimerSessao() {
+  pararTimerSessao();
+  avisoMostrado = false;
+  atualizarTempoSessao(); // atualização imediata
+  timerSessao = setInterval(atualizarTempoSessao, 30 * 1000); // a cada 30s
+}
+
+function pararTimerSessao() {
+  if (timerSessao) { clearInterval(timerSessao); timerSessao = null; }
+}
+
+function fmtTempo(ms) {
+  if (ms < 0) return '00:00';
+  const min = Math.floor(ms / 60000);
+  const sec = Math.floor((ms % 60000) / 1000);
+  if (min >= 60) {
+    const h = Math.floor(min / 60);
+    const m = min % 60;
+    return `${h}h${String(m).padStart(2,'0')}`;
+  }
+  return `${String(min).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+}
+
+async function atualizarTempoSessao() {
+  if (!sessaoAtual?.expira_em) return;
+  const restante = sessaoAtual.expira_em - Date.now();
+
+  if (restante <= 0) {
+    // Sessão expirou — força logout
+    pararTimerSessao();
+    toast('⏰ Sessão expirada. Faça login novamente.','err');
+    setTimeout(() => {
+      Auth.clearSessao().then(() => {
+        sessaoAtual = null; dadosAtual = null;
+        if (elAviso) elAviso.style.display = 'none';
+        mostrarLogin();
+      });
+    }, 1500);
+    return;
+  }
+
+  if (elSessTempo) {
+    elSessTempo.textContent = '⏱ ' + fmtTempo(restante);
+    elSessTempo.classList.remove('alerta','critico');
+    if (restante < 60 * 1000)        elSessTempo.classList.add('critico');
+    else if (restante < AVISO_SESSAO_MIN * 60 * 1000) elSessTempo.classList.add('alerta');
+  }
+
+  // Mostrar banner quando entrar na faixa de 5min
+  if (restante < AVISO_SESSAO_MIN * 60 * 1000 && !avisoMostrado) {
+    avisoMostrado = true;
+    if (elAviso) {
+      elAviso.style.display = 'flex';
+      atualizarBannerAviso(restante);
+    }
+  } else if (avisoMostrado && elAviso && elAviso.style.display !== 'none') {
+    atualizarBannerAviso(restante);
+  }
+}
+
+function atualizarBannerAviso(restanteMs) {
+  if (!elAviso || !elAvisoMin) return;
+  const min = Math.max(0, Math.ceil(restanteMs / 60000));
+  elAvisoMin.textContent = min;
+  if (restanteMs < 60 * 1000) elAviso.classList.add('critico');
+  else elAviso.classList.remove('critico');
+}
+
+if (elBtnEstender) {
+  elBtnEstender.addEventListener('click', async () => {
+    const nova = await Auth.estenderSessao(ESTENDER_MIN);
+    if (nova) {
+      sessaoAtual = nova;
+      avisoMostrado = false;
+      if (elAviso) elAviso.style.display = 'none';
+      atualizarTempoSessao();
+      toast(`✓ Sessão estendida por +${ESTENDER_MIN}min`,'ok');
+    }
+  });
+}
+
+if (elBtnAvFechar) {
+  elBtnAvFechar.addEventListener('click', () => {
+    if (elAviso) elAviso.style.display = 'none';
+  });
+}
+
+// Esconder o aviso e parar o timer no logout (já chamado pelo elBtnLogout existente)
+const _origLogout = elBtnLogout.onclick;
+// Garantir limpeza ao deslogar
+document.getElementById('btn-logout').addEventListener('click', () => {
+  pararTimerSessao();
+  if (elAviso) elAviso.style.display = 'none';
+});
+
+// ═══════════════════════════════════════════════
+// v1.7 — Versão visível no logo
+// ═══════════════════════════════════════════════
+(function injetarVersao() {
+  try {
+    const mf = chrome.runtime.getManifest();
+    const logo = document.getElementById('logo-ixc');
+    if (logo && mf?.version) {
+      logo.title = `CKS Lookup v${mf.version}`;
+    }
+  } catch(e) { /* ignora — manifest sempre acessível */ }
+})();
