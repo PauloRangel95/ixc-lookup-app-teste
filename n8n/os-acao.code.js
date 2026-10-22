@@ -40,6 +40,12 @@ try {
     const r = await ixcList.call(this,'su_oss_chamado',{ qtype:'su_oss_chamado.id', query:id, oper:'=', rp:'1', page:'1', sortname:'su_oss_chamado.id', sortorder:'asc' });
     return [{ json:{ ok:true, os:(r&&r.registros&&r.registros[0])||null } }];
   }
+  if (acao === 'listar'){
+    const ep = String(body.endpoint||'').trim(); if(!ep) return [{json:{ok:false,erro:'endpoint'}}];
+    const params = body.params || { qtype:ep+'.id', query:'0', oper:'>', rp:'500', page:'1', sortname:ep+'.id', sortorder:'asc' };
+    const r = await ixcList.call(this, ep, params);
+    return [{json:{ok:true, endpoint:ep, total:(r&&r.total), registros:(r&&r.registros)||r}}];
+  }
 
   // ── ESCRITA (trava OS teste) ──
   const idChamado = String(body.id_chamado || '').trim();
