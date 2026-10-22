@@ -72,6 +72,13 @@ try {
     const r = await ixcWrite.call(this, 'su_oss_chamado_reagendar', payload);
     return [{ json:{ ok:true, acao, id_chamado:idChamado, resposta:r } }];
   }
+  // INICIAR DESLOCAMENTO (1º passo) → status DS (via executar + evento 17)
+  if (acao === 'deslocamento'){
+    const payload = { id_chamado:idChamado, status:'DS', id_evento:'17',
+      mensagem: String(body.mensagem || 'Iniciou deslocamento.'), id_tecnico: String(body.id_tecnico||''), data: brDate() };
+    const r = await ixcWrite.call(this, 'su_oss_chamado_executar', payload);
+    return [{ json:{ ok:true, acao, id_chamado:idChamado, resposta:r } }];
+  }
   // EXECUTAR (técnico começou/chegou) → status EX
   if (acao === 'executar'){
     const payload = { id_chamado:idChamado, status:'EX', id_evento:'9',

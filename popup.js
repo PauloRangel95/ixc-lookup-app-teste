@@ -725,6 +725,7 @@ document.addEventListener('click', e => {
   if (action==='mos-voltar-lista')    abrirMinhasOS();
   if (action==='os-mensagem')         _osRegistrarMensagem(p);
   if (action==='os-reagendar')        _osReagendar(p);
+  if (action==='os-deslocamento')     _osDeslocamento(p);
   if (action==='os-executar')         _osExecutar(p);
   if (action==='os-finalizar')        _osFinalizar(p);
   if (action==='mos-detalhe-modal')   { const v=document.getElementById('minhas-os-view'); const c=document.getElementById('os-contexto'); if(c)c.style.display='none'; setState('none'); if(v)v.style.display=''; _mosDetalhe(p); }
@@ -1294,7 +1295,10 @@ function _mosPrependOSCard(o){
   body+='<div class="btns" style="margin-top:8px">'+topBtns+'</div>';
   body+='<div style="margin-top:8px"><div style="font-size:11px;color:var(--tx2);margin-bottom:4px">Ações da OS (teste):</div>'
     +'<div class="btns">'
+    +'<button class="btn-sm btn-blue" data-action="os-deslocamento" data-p="'+o.id+'">🚚 Deslocamento</button>'
     +'<button class="btn-sm btn-green" data-action="os-executar" data-p="'+o.id+'">▶ Executar</button>'
+    +'</div>'
+    +'<div class="btns" style="margin-top:4px">'
     +'<button class="btn-sm btn-blue" data-action="os-finalizar" data-p="'+o.id+'">✅ Encerrar OS</button>'
     +'<button class="btn-sm btn-yellow" data-action="os-reagendar" data-p="'+o.id+'">🕐 P/ agendamento</button>'
     +'</div></div>';
@@ -1340,6 +1344,10 @@ async function _osAcaoSimples(idChamado, acao, mensagem, okMsg){
     if (ok){ toast(okMsg,'ok'); _mosState.osAll=null; setTimeout(abrirMinhasOS, 700); }
     else toast('Falha: '+((r&&r.erro)||(r&&r.resposta&&r.resposta.message)||'erro'),'err');
   } catch(e){ toast('Erro: '+(e.message||''),'err'); }
+}
+async function _osDeslocamento(idChamado){
+  if(!confirm('Iniciar DESLOCAMENTO para a OS #'+idChamado+'?')) return;
+  _osAcaoSimples(idChamado, 'deslocamento', 'Em deslocamento para o atendimento.', 'Deslocamento iniciado ✓');
 }
 async function _osExecutar(idChamado){
   if(!confirm('Iniciar EXECUÇÃO da OS #'+idChamado+'?')) return;
