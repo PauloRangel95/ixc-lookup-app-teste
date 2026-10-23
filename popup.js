@@ -1394,13 +1394,75 @@ function _encDiagWire(ov){
   lista.onclick=(e)=>{ const row=e.target.closest('[data-diag]'); if(!row) return; _encDados.id_su_diagnostico=row.getAttribute('data-diag'); _encDados.diag_desc=row.getAttribute('data-desc'); pinta(inp.value); };
   if(!_encDiag){ _encCarregarDiag().then(()=>pinta(inp.value)); } else pinta('');
 }
+// ── Anexos: upload (base64) + geração de imagem a partir dos dados que já temos ──
+async function _encUploadAnexo(dataUrl, nome, descricao){
+  try {
+    const r = await fetch(WEBHOOK_OS_ACAO, { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ acao:'anexo', id_chamado:_encDados.id_chamado, arquivo:dataUrl, nome_arquivo:nome, descricao:descricao||nome }) }).then(x=>x.json());
+    return !!(r && r.ok && r.resposta && (r.resposta.type==='success' || r.resposta.id || r.id));
+  } catch(e){ return false; }
+}
+function _encImgTexto(titulo, linhas){
+  const W=560, pad=18, lh=24, H=pad*2+34+linhas.length*lh;
+  const cv=document.createElement('canvas'); cv.width=W; cv.height=H; const x=cv.getContext('2d');
+  x.fillStyle='#0f1420'; x.fillRect(0,0,W,H);
+  x.fillStyle='#00c4ff'; x.font='bold 18px sans-serif'; x.fillText(titulo, pad, pad+18);
+  x.fillStyle='#e6edf6'; x.font='14px sans-serif';
+  linhas.forEach((l,i)=>x.fillText(String(l), pad, pad+44+i*lh));
+  x.strokeStyle='#2a3550'; x.strokeRect(1,1,W-2,H-2);
+  return cv.toDataURL('image/png');
+}
+function _encImgPotencia(){
+  const oc=(dadosAtual&&dadosAtual._olt_cloud)||{}; const o=oc[_encDados.id_login]; if(!o) return null;
+  return _encImgTexto('Potência da ONU — OLT Cloud', [
+    'Login: '+(_encDados.login_pppoe||_encDados.id_login||'-'),
+    'OLT: '+(o.olt||'-')+'   Slot/PON/ONU: '+(o.slot_pon_onu||((o.slot||'-')+'/'+(o.pon||'-'))),
+    'Sinal ONU (RX): '+(o.sinal_onu!=null?o.sinal_onu+' dBm':'-')+'   Sinal OLT: '+(o.sinal_olt!=null?o.sinal_olt+' dBm':'-'),
+    'Status: '+(o.status||'-')+'   Modelo: '+(o.modelo||'-'),
+    'Coletado: '+new Date().toLocaleString('pt-BR') ]);
+}
+function _encImgOZmap(){
+  const oz=(dadosAtual&&dadosAtual._ozmap)||{}; const d=oz[_encDados.id_login]; if(!d||!d.encontrado) return null;
+  const cx=d.caixa||{};
+  return _encImgTexto('Rede FTTH — OZmap', [
+    'Caixa (CTO): '+(cx.nome||'-')+'   Porta: '+(d.porta!=null?d.porta:'-')+'   Drop: '+(d.drop_m!=null?d.drop_m+' m':'-'),
+    (d.onu?('ONU: '+[d.onu.serial,d.onu.pppoe].filter(Boolean).join(' · ')):'ONU: -'),
+    'Endereço: '+(d.endereco||'-'),
+    'Coletado: '+new Date().toLocaleString('pt-BR') ]);
+}
+function _encAnexosWire(ov){
+  const addFeito=(n)=>{ _encDados._anexos=_encDados._anexos||[]; _encDados._anexos.push(n); const el=ov.querySelector('#enc-anexos-feitos'); if(el) el.innerHTML=_encDados._anexos.map(a=>'✓ '+a).join('<br>'); };
+  ov.querySelectorAll('[data-encanexo]').forEach(b=>b.onclick=async function(){
+    const tipo=this.getAttribute('data-encanexo'); const orig=this.textContent; this.disabled=true; this.textContent='⏳';
+    const img = tipo==='potencia'?_encImgPotencia():_encImgOZmap();
+    const desc = tipo==='potencia'?'Potência da ONU (OLT Cloud)':'Rede OZmap';
+    if(!img){ toast('Sem dados de '+desc,'err'); this.disabled=false; this.textContent=orig; return; }
+    const ok=await _encUploadAnexo(img, tipo+'.png', desc);
+    if(ok){ toast('Anexado ✓','ok'); addFeito(desc); this.textContent='✓'; } else { this.disabled=false; this.textContent=orig; toast('Falha ao anexar','err'); }
+  });
+  const foto=ov.querySelector('#enc-foto'); if(foto) foto.onchange=function(){ const f=this.files&&this.files[0]; if(!f) return; const rd=new FileReader(); rd.onload=async()=>{ const ok=await _encUploadAnexo(rd.result, f.name||'foto.jpg', 'Foto do atendimento'); if(ok){ toast('Foto anexada ✓','ok'); addFeito('Foto: '+(f.name||'foto')); } else toast('Falha ao anexar foto','err'); this.value=''; }; rd.readAsDataURL(f); };
+}
+function _encAssinaturaWire(ov){
+  const cv=ov.querySelector('#enc-assina'); if(!cv) return; const ctx=cv.getContext('2d');
+  ctx.fillStyle='#fff'; ctx.fillRect(0,0,cv.width,cv.height); ctx.lineWidth=2; ctx.strokeStyle='#111'; ctx.lineCap='round';
+  let drawing=false, last=null;
+  const pos=(e)=>{ const r=cv.getBoundingClientRect(); const t=e.touches?e.touches[0]:e; return {x:(t.clientX-r.left)*(cv.width/r.width), y:(t.clientY-r.top)*(cv.height/r.height)}; };
+  const start=(e)=>{ drawing=true; last=pos(e); e.preventDefault(); };
+  const move=(e)=>{ if(!drawing)return; const p=pos(e); ctx.beginPath(); ctx.moveTo(last.x,last.y); ctx.lineTo(p.x,p.y); ctx.stroke(); last=p; _encDados._assinou=true; e.preventDefault(); };
+  const end=()=>{ drawing=false; };
+  cv.onmousedown=start; cv.onmousemove=move; cv.onmouseup=end; cv.onmouseleave=end;
+  cv.ontouchstart=start; cv.ontouchmove=move; cv.ontouchend=end;
+  const lim=ov.querySelector('#enc-assina-limpar'); if(lim) lim.onclick=()=>{ ctx.fillStyle='#fff'; ctx.fillRect(0,0,cv.width,cv.height); _encDados._assinou=false; };
+  const sv=ov.querySelector('#enc-assina-salvar'); if(sv) sv.onclick=async()=>{ if(!_encDados._assinou){ toast('Assine primeiro','err'); return; } sv.disabled=true; sv.textContent='⏳'; const ok=await _encUploadAnexo(cv.toDataURL('image/png'),'assinatura.png','Assinatura do cliente'); if(ok){ _encDados.assinatura_ok=true; toast('Assinatura anexada ✓','ok'); sv.textContent='✓ Anexada'; } else { sv.disabled=false; sv.textContent='Salvar assinatura'; toast('Falha ao anexar','err'); } };
+}
 // FLUXO ÚNICO de atendimento: deslocamento → execução → encerramento (wizard) → finalizar.
 // Uma tela só que avança por status, sem recarregar a lista entre os passos.
 function _osAtendimento(idChamado){
   const o = _mosState.osById && _mosState.osById[String(idChamado)];
   if(!o) return;
   const nome = (_mosState.clienteMap && _mosState.clienteMap[String(o.id_cliente)])||'';
-  _encDados = { id_chamado:String(idChamado), relato:'' };
+  const _lg = (dadosAtual && dadosAtual.logins ? dadosAtual.logins : []).find(function(l){return String(l.id)===String(o.id_login);});
+  _encDados = { id_chamado:String(idChamado), relato:'', id_login:String(o.id_login||''), login_pppoe:(_lg&&_lg.login)||'' };
   _encCarregarDiag(o.setor);
   let status = String(o.status||'');
   let idx = 0;
@@ -1415,8 +1477,15 @@ function _osAtendimento(idChamado){
     { ic:'📡', titulo:'Autorizar ONU',        render:()=>emConstr('Autorizar ONU (IXC→OLT)') },
     { ic:'⚙️', titulo:'Configurar Dispositivo', render:()=>emConstr('Configurar Dispositivo (PPPoE)') },
     { ic:'📦', titulo:'Produtos / materiais',  render:()=>emConstr('Produtos / materiais') },
-    { ic:'📎', titulo:'Anexos',                render:()=>emConstr('Anexos automáticos (potência/OZmap) + fotos') },
-    { ic:'✍️', titulo:'Assinatura',            render:()=>emConstr('Assinatura do cliente') },
+    { ic:'📎', titulo:'Anexos', render:()=>'<div style="font-size:11px;color:var(--tx2);margin-bottom:6px">Anexos automáticos (reaproveita o que já temos) + foto:</div>'
+        +'<div class="btns"><button class="btn-sm btn-blue" data-encanexo="potencia">⚡ Potência (OLT)</button><button class="btn-sm btn-blue" data-encanexo="ozmap">🗺️ OZmap</button></div>'
+        +'<div style="margin-top:8px"><label style="font-size:12px;color:var(--tx)">📷 Foto do atendimento</label><input type="file" id="enc-foto" accept="image/*" capture="environment" style="display:block;margin-top:4px;font-size:12px;color:var(--tx)"></div>'
+        +'<div id="enc-anexos-feitos" style="font-size:11px;color:var(--g);margin-top:8px">'+((_encDados._anexos||[]).map(a=>'✓ '+a).join('<br>'))+'</div>',
+      after:(ov)=>_encAnexosWire(ov) },
+    { ic:'✍️', titulo:'Assinatura', render:()=>(_encDados.assinatura_ok?'<div style="color:var(--g);font-size:12px;margin-bottom:6px">✓ Assinatura anexada</div>':'<div style="font-size:11px;color:var(--tx2);margin-bottom:6px">Colete a assinatura do cliente (opcional conforme o assunto).</div>')
+        +'<canvas id="enc-assina" width="320" height="140" style="width:100%;background:#fff;border:1px solid var(--b2);border-radius:6px;touch-action:none;cursor:crosshair"></canvas>'
+        +'<div class="btns" style="margin-top:6px"><button class="btn-sm btn-gray" id="enc-assina-limpar">Limpar</button><button class="btn-sm btn-blue" id="enc-assina-salvar">Salvar assinatura</button></div>',
+      after:(ov)=>_encAssinaturaWire(ov) },
     { ic:'✅', titulo:'Resumo',                render:()=>'<div style="font-size:12px;color:var(--tx);line-height:1.9">'
         +'Cliente: <strong>'+(nome||'—')+'</strong><br>'
         +'Diagnóstico: <strong>'+(_encDados.diag_desc||'—')+'</strong><br>'

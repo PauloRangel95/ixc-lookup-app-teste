@@ -97,6 +97,16 @@ try {
     const r = await ixcWrite.call(this, 'su_oss_chamado_fechar', payload);
     return [{ json:{ ok:true, acao, id_chamado:idChamado, resposta:r } }];
   }
+  // ANEXO → anexa arquivo (base64) na OS. { arquivo (base64/dataURI), nome_arquivo?, descricao?, classificacao? }
+  if (acao === 'anexo'){
+    const arq = String(body.arquivo || '').trim();
+    if (!arq) return [{ json:{ ok:false, erro:'arquivo (base64) é obrigatório' } }];
+    const payload = { id_oss_chamado:idChamado, descricao:String(body.descricao||'Anexo'),
+      classificacao_arquivo:String(body.classificacao||'P'), local_arquivo:arq };
+    if (body.nome_arquivo) payload.nome_arquivo = String(body.nome_arquivo);
+    const r = await ixcWrite.call(this, 'su_oss_chamado_arquivos', payload);
+    return [{ json:{ ok:true, acao, id_chamado:idChamado, id:(r&&r.id)||null, resposta:r } }];
+  }
   return [{ json:{ ok:false, erro:'ação não suportada: '+acao } }];
 } catch(e){
   return [{ json:{ ok:false, erro: errInfo(e) } }];
