@@ -1428,6 +1428,77 @@ function _encDiagWire(ov){
   lista.onclick=(e)=>{ const row=e.target.closest('[data-diag]'); if(!row) return; _encDados.id_su_diagnostico=row.getAttribute('data-diag'); _encDados.diag_desc=row.getAttribute('data-desc'); pinta(inp.value); };
   pinta(''); if(!_encDiag && _encDiagPromise) _encDiagPromise.then(()=>pinta(inp.value));
 }
+// ── Autorizar ONU (fluxo IXC): listar OLTs/perfis/ONUs não autorizadas, casar e autorizar ──
+let _onuOlts=null, _onuPerfis=null;
+async function _encOnuRefs(){
+  if(_onuOlts && _onuPerfis) return;
+  try{
+    const [ro,rp]=await Promise.all([
+      fetch(WEBHOOK_OS_ACAO,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({acao:'listar',endpoint:'radpop_radio',params:{qtype:'radpop_radio.id',query:'0',oper:'>',rp:'2000',page:'1',sortname:'radpop_radio.descricao',sortorder:'asc'}})}).then(x=>x.json()),
+      fetch(WEBHOOK_OS_ACAO,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({acao:'listar',endpoint:'radpop_radio_cliente_fibra_perfil',params:{qtype:'radpop_radio_cliente_fibra_perfil.id',query:'0',oper:'>',rp:'200',page:'1',sortname:'radpop_radio_cliente_fibra_perfil.nome',sortorder:'asc'}})}).then(x=>x.json())
+    ]);
+    _onuOlts=(ro&&Array.isArray(ro.registros))?ro.registros:[];
+    _onuPerfis=(rp&&Array.isArray(rp.registros))?rp.registros:[];
+  }catch(e){ _onuOlts=_onuOlts||[]; _onuPerfis=_onuPerfis||[]; }
+}
+function _onuDecodeBlob(b64){ try{ const s=atob(b64); const t=[...s.matchAll(/s:\d+:"([^"]*)"/g)].map(m=>m[1]); const kv={}; for(let i=0;i<t.length-1;i+=2)kv[t[i]]=t[i+1]; return kv; }catch(e){ return {}; } }
+// Perfil é pelo MODELO da ONU (não por plano). Bridge opcional (padrão router).
+function _onuMatchPerfil(modelo, bridge){
+  const ps=_onuPerfis||[]; const m=String(modelo||'').toUpperCase();
+  if(bridge){ const b=ps.find(p=>/BRIDGE/.test((p.nome||'').toUpperCase())&&!/521/.test((p.nome||'').toUpperCase())); if(b) return b.id; }
+  const key = /121/.test(m)?'121': /120/.test(m)?'120': /(XX530|530)/.test(m)?'530': /(AX3000|3000)/.test(m)?'3000': /(HUAWEI|HG8|EG8)/.test(m)?'HUAWEI': /(ZTE|F6600)/.test(m)?'ZTE': null;
+  if(key){ const p=ps.find(x=>new RegExp(key).test((x.nome||'').toUpperCase())); if(p) return p.id; }
+  return '';
+}
+function _encOnuWire(ov){
+  if(_encDados._onu_ok) return;
+  const q=id=>ov.querySelector('#'+id);
+  const selOlt=q('onu-olt'), lista=q('onu-lista'), pbox=q('onu-perfil-box'), selPer=q('onu-perfil'), chkBr=q('onu-bridge');
+  let sel=null;
+  _encOnuRefs().then(()=>{
+    if(selOlt){
+      selOlt.innerHTML='<option value="">— selecione a OLT —</option>'+(_onuOlts||[]).map(o=>'<option value="'+o.id+'">'+String(o.descricao||('#'+o.id)).replace(/</g,'')+'</option>').join('');
+      try{ const oc=((dadosAtual&&dadosAtual._olt_cloud)||{})[_encDados.id_login]; const nm=oc&&oc.olt; if(nm){ const tok=String(nm).toUpperCase().split(/\s+/)[0]; const mt=(_onuOlts||[]).find(o=>String(o.descricao||'').toUpperCase().indexOf(tok)>=0); if(mt) selOlt.value=mt.id; } }catch(_){}
+    }
+    if(selPer) selPer.innerHTML=(_onuPerfis||[]).map(p=>'<option value="'+p.id+'">'+String(p.nome||('#'+p.id)).replace(/</g,'')+'</option>').join('');
+  });
+  const setPerfilAuto=()=>{ if(!sel||!selPer) return; const id=_onuMatchPerfil(sel.modelo, chkBr&&chkBr.checked); if(id) selPer.value=id; };
+  if(chkBr) chkBr.onchange=setPerfilAuto;
+  const btnBuscar=ov.querySelector('[data-onu="buscar"]');
+  if(btnBuscar) btnBuscar.onclick=async function(){
+    const idOlt=selOlt&&selOlt.value; if(!idOlt){ toast('Selecione a OLT','err'); return; }
+    const slot=(q('onu-slot').value||'').trim(), pon=(q('onu-pon').value||'').trim();
+    this.disabled=true; const orig=this.textContent; this.textContent='⏳'; lista.innerHTML='<div style="font-size:11px;color:var(--tx2)">Procurando...</div>';
+    try{
+      const r=await fetch(WEBHOOK_OS_ACAO,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({acao:'listar',endpoint:'fh_onu_nao_autorizadas',params:{grid_param:'[{"TB":"id_olt","P":"'+idOlt+'"}]'}})}).then(x=>x.json());
+      const reg=r&&r.registros; const rows=(reg&&reg.rows)?reg.rows:[];
+      let items=rows.map(row=>{ const kv=_onuDecodeBlob(row.id); return {getId:kv.ID||'', mac:kv.MAC||'', slot:kv.SLOT||'', pon:kv.PON||'', ponid:kv.PONID||'', modelo:kv.MODELO||kv.EQID||''}; });
+      if(slot) items=items.filter(it=>String(it.slot)===slot);
+      if(pon) items=items.filter(it=>String(it.pon)===pon);
+      if(!items.length){ lista.innerHTML='<div style="font-size:11px;color:var(--y)">Nenhuma ONU não autorizada'+((slot||pon)?(' em '+slot+'/'+pon):'')+' nessa OLT.</div>'; pbox.style.display='none'; }
+      else { lista.innerHTML=items.map((it,i)=>'<div data-onusel="'+i+'" style="padding:6px 8px;border:1px solid var(--b);border-radius:6px;margin-bottom:4px;cursor:pointer;font-size:12px;color:var(--tx)"><b>'+it.mac+'</b> · '+it.modelo+' · slot/pon '+it.slot+'/'+it.pon+'</div>').join(''); lista._items=items; }
+    }catch(e){ lista.innerHTML='<div style="color:var(--r);font-size:11px">Erro ao procurar.</div>'; }
+    this.disabled=false; this.textContent=orig;
+  };
+  if(lista) lista.onclick=(e)=>{ const row=e.target.closest('[data-onusel]'); if(!row||!lista._items) return; sel=lista._items[+row.getAttribute('data-onusel')]; _encDados._onu_sel=sel;
+    [...lista.querySelectorAll('[data-onusel]')].forEach(x=>x.style.borderColor='var(--b)'); row.style.borderColor='var(--acc)';
+    if(pbox) pbox.style.display='block'; setPerfilAuto();
+  };
+  const btnAut=ov.querySelector('[data-onu="autorizar"]');
+  if(btnAut) btnAut.onclick=async function(){
+    if(!sel){ toast('Selecione a ONU','err'); return; }
+    if(!confirm('AUTORIZAR a ONU '+sel.mac+' ('+sel.modelo+', slot/pon '+sel.slot+'/'+sel.pon+')?\n\n⚠ Isto GRAVA na OLT REAL.')) return;
+    this.disabled=true; this.textContent='⏳ Autorizando...';
+    try{
+      const r=await fetch(WEBHOOK_OS_ACAO,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ acao:'onu_autorizar',
+        id_chamado:_encDados.id_chamado, get_id:sel.getId, id_transmissor:(selOlt&&selOlt.value)||'', id_perfil:(selPer&&selPer.value)||'',
+        id_login:_encDados.id_login, id_contrato:(dadosAtual&&dadosAtual.contrato&&(dadosAtual.contrato.id||dadosAtual.contrato.numero))||'',
+        onu_tipo:sel.modelo, mac:sel.mac, slotno:sel.slot, ponno:sel.pon, nome:_encDados.login_pppoe, bridge:(chkBr&&chkBr.checked)?'1':'0' })}).then(x=>x.json());
+      if(r&&r.ok){ _encDados._onu_ok=true; _encDados._onu_mac=sel.mac; toast('ONU autorizada ✓','ok'); this.textContent='✓ Autorizada'; if(pbox) pbox.innerHTML='<div style="color:var(--g);font-size:12px">✓ ONU '+sel.mac+' autorizada (fibra #'+(r.id_cliente_fibra||'?')+').</div>'; }
+      else { this.disabled=false; this.textContent='📡 Autorizar ONU na OLT'; toast('Falha: '+((r&&(r.erro||(r.gravar&&r.gravar.message)))||'erro'),'err'); }
+    }catch(e){ this.disabled=false; this.textContent='📡 Autorizar ONU na OLT'; toast('Erro ao autorizar','err'); }
+  };
+}
 // ── Anexos: upload (base64) + geração de imagem a partir dos dados que já temos ──
 async function _encUploadAnexo(dataUrl, nome, descricao){
   try {
@@ -1618,7 +1689,25 @@ function _osAtendimento(idChamado){
         +'<div style="font-size:10px;color:var(--tx2);margin:3px 0 2px">Pré-preenchido com os dados de validação'+(_encResp?' + resposta padrão do assunto':'')+' — complete o atendimento.</div>'
         +'<textarea id="enc-relato" rows="10" style="width:100%;margin-top:4px;padding:8px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx);font-family:inherit;font-size:12px" placeholder="O que foi feito no atendimento...">'+(_encDados.relato||'')+'</textarea>',
       after:(ov)=>_encRelatoWire(ov) },
-    { ic:'📡', titulo:'Autorizar ONU',        render:()=>emConstr('Autorizar ONU (IXC→OLT)') },
+    { ic:'📡', titulo:'Autorizar ONU', render:()=>{
+        if(_encDados._onu_ok) return '<div style="color:var(--g);font-size:12px">✓ ONU autorizada — MAC '+(_encDados._onu_mac||'')+'</div>';
+        return '<div style="font-size:11px;color:var(--tx2);margin-bottom:6px">ONU ligada? Selecione a OLT e informe a GPON (slot/pon) para localizar.</div>'
+        +'<label style="font-size:11px;color:var(--tx)">OLT / transmissor</label>'
+        +'<select id="onu-olt" style="width:100%;margin:2px 0 6px;padding:6px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx)"><option value="">Carregando...</option></select>'
+        +'<div style="display:flex;gap:6px;align-items:flex-end">'
+          +'<div style="flex:1"><label style="font-size:11px;color:var(--tx)">Slot</label><input id="onu-slot" inputmode="numeric" style="width:100%;padding:6px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx)"></div>'
+          +'<div style="flex:1"><label style="font-size:11px;color:var(--tx)">PON</label><input id="onu-pon" inputmode="numeric" style="width:100%;padding:6px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx)"></div>'
+          +'<button class="btn-sm btn-blue" data-onu="buscar">🔎 Procurar</button>'
+        +'</div>'
+        +'<div id="onu-lista" style="margin-top:6px"></div>'
+        +'<div id="onu-perfil-box" style="display:none;margin-top:8px;border-top:1px solid var(--b);padding-top:8px">'
+          +'<label style="font-size:11px;color:var(--tx)">Perfil (automático pelo modelo)</label>'
+          +'<select id="onu-perfil" style="width:100%;margin:2px 0;padding:6px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx)"></select>'
+          +'<label style="font-size:12px;color:var(--tx);display:flex;align-items:center;gap:6px;margin-top:4px"><input type="checkbox" id="onu-bridge"> Bridge <span style="color:var(--tx2)">(padrão: router)</span></label>'
+          +'<button class="btn-sm btn-green" data-onu="autorizar" style="margin-top:8px;width:100%">📡 Autorizar ONU na OLT</button>'
+          +'<div style="font-size:10px;color:var(--y);margin-top:4px">⚠ Grava na OLT real. VLAN herda da OLT. Confira MAC/slot/pon.</div>'
+        +'</div>'; },
+      after:(ov)=>_encOnuWire(ov) },
     { ic:'⚙️', titulo:'Configurar Dispositivo', render:()=>emConstr('Configurar Dispositivo (PPPoE)') },
     { ic:'📦', titulo:'Produtos / materiais',  render:()=>emConstr('Produtos / materiais') },
     { ic:'📎', titulo:'Anexos', render:()=>'<div style="font-size:11px;color:var(--tx2);margin-bottom:6px">Anexos automáticos (reaproveita o que já temos) + foto:</div>'
