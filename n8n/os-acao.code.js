@@ -129,7 +129,13 @@ try {
     }
     // 2) completa o registro: busca o atual e mescla os vínculos
     let cur={}; try{ const g=await ixcList.call(this,'radpop_radio_cliente_fibra',{ qtype:'radpop_radio_cliente_fibra.id', query:idFibra, oper:'=', rp:'1', page:'1' }); cur=(g&&g.registros&&g.registros[0])||{}; }catch(_){}
-    const idTx = String(body.id_transmissor||cur.id_transmissor||'');
+    // Puxa projeto/caixa/porta/transmissor do CADASTRO do login (radusuarios) — obrigatórios no PUT
+    const idLogin = String(body.id_login||cur.id_login||'');
+    let lg={}; if(idLogin){ try{ const gl=await ixcList.call(this,'radusuarios',{ qtype:'radusuarios.id', query:idLogin, oper:'=', rp:'1', page:'1' }); lg=(gl&&gl.registros&&gl.registros[0])||{}; }catch(_){} }
+    const idTx = String(body.id_transmissor||cur.id_transmissor||lg.id_transmissor||'');
+    const idProjeto = String(body.id_projeto||cur.id_projeto||lg.id_df_projeto||'');
+    const idCaixa   = String(body.id_caixa_ftth||cur.id_caixa_ftth||lg.id_caixa_ftth||'');
+    const portaFtth = String(body.porta_ftth!=null?body.porta_ftth:(cur.porta_ftth||lg.ftth_porta||''));
     // VLAN: usa a informada; senão herda da OLT (vlan/vlan_pppoe mais comuns entre os vizinhos do transmissor)
     let vlan=String(body.vlan||'').trim(), vlanP=String(body.vlan_pppoe||'').trim();
     if((!vlan||!vlanP) && idTx){ try{
@@ -141,10 +147,13 @@ try {
     }catch(_){} }
     const upd = Object.assign({}, cur, {
       id: idFibra,
-      id_login:       String(body.id_login||cur.id_login||''),
-      id_contrato:    String(body.id_contrato||cur.id_contrato||''),
+      id_login:       idLogin,
+      id_contrato:    String(body.id_contrato||cur.id_contrato||lg.id_contrato||''),
       id_perfil:      String(body.id_perfil||cur.id_perfil||''),
       id_transmissor: idTx,
+      id_projeto:     idProjeto,
+      id_caixa_ftth:  idCaixa,
+      porta_ftth:     portaFtth,
       onu_tipo:       String(body.onu_tipo||cur.onu_tipo||''),
       mac:            String(body.mac||cur.mac||''),
       slotno:         String(body.slotno||cur.slotno||''),
@@ -152,13 +161,13 @@ try {
       vlan:           vlan||String(cur.vlan||''),
       vlan_pppoe:     vlanP||String(cur.vlan_pppoe||''),
       tipo_autenticacao: 'MAC',
-      nome:           String(body.nome||cur.nome||'')
+      nome:           String(body.nome||cur.nome||lg.login||'')
     });
     let r2; try{ r2 = await ixcPut.call(this,'radpop_radio_cliente_fibra/'+idFibra, upd); }
     catch(e){ return [{ json:{ ok:false, etapa:'editar', id_cliente_fibra:idFibra, erro:errInfo(e), autorizar:r1 } }]; }
     // Modo seguro: só completa o cadastro (NÃO grava na OLT)
     if(String(body.somente_completar||'')==='1')
-      return [{ json:{ ok:!(r2&&r2.type==='error'), acao, etapa:'completar', id_cliente_fibra:idFibra, vlan, vlan_pppoe:vlanP, editar:r2 } }];
+      return [{ json:{ ok:!(r2&&r2.type==='error'), acao, etapa:'completar', id_cliente_fibra:idFibra, vlan, vlan_pppoe:vlanP, id_projeto:idProjeto, id_caixa_ftth:idCaixa, porta_ftth:portaFtth, login_ativo:(lg&&lg.ativo), editar:r2 } }];
     // 3) gravar dispositivo → envia o comando/provisiona na OLT
     let r3; try{ r3 = await ixcWrite.call(this,'botao_gravar_dispositivo_22408',{ id:idFibra }); }
     catch(e){ return [{ json:{ ok:false, etapa:'gravar', id_cliente_fibra:idFibra, erro:errInfo(e), autorizar:r1, editar:r2 } }]; }
