@@ -1416,11 +1416,17 @@ function _encImgTexto(titulo, linhas){
 // "Print" do card REAL do PWA (igual à tela) via html2canvas. Fallback = desenho de texto.
 async function _encSnapEl(el){
   if (!el || typeof html2canvas!=='function') return null;
+  let wrap=null;
   try {
-    const cv = await html2canvas(el, { backgroundColor:'#0f1420', scale:2, useCORS:true, logging:false,
-      windowWidth: document.documentElement.scrollWidth });
+    const pad=22, w=Math.max(360, el.offsetWidth||360);
+    wrap=document.createElement('div');
+    wrap.style.cssText='position:fixed;left:-10000px;top:0;padding:'+pad+'px;background:#0f1420;width:'+(w+pad*2)+'px;box-sizing:border-box';
+    const clone=el.cloneNode(true); clone.style.margin='0';
+    wrap.appendChild(clone); document.body.appendChild(wrap);
+    const cv = await html2canvas(wrap, { backgroundColor:'#0f1420', scale:2, useCORS:true, logging:false });
     return cv.toDataURL('image/png');
   } catch(e){ return null; }
+  finally { if (wrap && wrap.parentNode) wrap.parentNode.removeChild(wrap); }
 }
 function _encCardEl(tipo){
   const i = (_encDados && _encDados.login_idx!=null) ? _encDados.login_idx : 0;
