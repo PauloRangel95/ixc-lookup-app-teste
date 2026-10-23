@@ -109,37 +109,61 @@ try {
     const r = await ixcWrite.call(this, 'su_oss_chamado_arquivos', payload);
     return [{ json:{ ok:true, acao, id_chamado:idChamado, id:(r&&r.id)||null, resposta:r } }];
   }
-  // AUTORIZAR ONU → provisiona na OLT REAL. Sequência oficial IXC (3 chamadas). VLAN herda da OLT (não enviamos).
+  // AUTORIZAR ONU → provisiona na OLT REAL. Sequência oficial IXC. VLAN herdada da OLT (vizinho + comum).
+  // body: get_id (ou id_fibra p/ reaproveitar), id_login, id_contrato, id_perfil, id_transmissor, onu_tipo, mac, slotno, ponno, nome
+  //       vlan?/vlan_pppoe? (se não vier, deriva da OLT), somente_completar?('1' = só PUT, NÃO grava na OLT)
   if (acao === 'onu_autorizar'){
-    const getId = String(body.get_id||'').trim();
-    if(!getId) return [{ json:{ ok:false, erro:'get_id (ID da ONU não autorizada) é obrigatório' } }];
-    // 1) autorizar → cria o registro radpop_radio_cliente_fibra
-    let r1; try{ r1 = await ixcWrite.call(this,'fh_onu_nao_autorizadas_22396',{ get_id:getId }); }
-    catch(e){ return [{ json:{ ok:false, etapa:'autorizar', erro:errInfo(e) } }]; }
-    const idFibra = String((r1&&(r1.id||r1.id_cliente_fibra||r1.id_registro))||'').trim();
-    if(!idFibra || (r1&&r1.type==='error')) return [{ json:{ ok:false, etapa:'autorizar', erro:'não retornou id do cliente fibra', resposta:r1 } }];
-    // 2) completa o registro: busca o atual e mescla os vínculos (VLAN fica a da OLT)
+    const macReq = String(body.mac||'').trim().toUpperCase();
+    let idFibra = String(body.id_fibra||'').trim();
+    // Evita duplicar: se já existe registro de fibra pra esse MAC, reaproveita
+    if(!idFibra && macReq){ try{ const gm=await ixcList.call(this,'radpop_radio_cliente_fibra',{ qtype:'radpop_radio_cliente_fibra.mac', query:macReq, oper:'=', rp:'1', page:'1', sortname:'radpop_radio_cliente_fibra.id', sortorder:'desc' }); const ex=(gm&&gm.registros&&gm.registros[0]); if(ex&&ex.id) idFibra=String(ex.id); }catch(_){} }
+    // 1) autorizar (só se ainda não tem registro) → cria radpop_radio_cliente_fibra
+    let r1=null;
+    if(!idFibra){
+      const getId = String(body.get_id||'').trim();
+      if(!getId) return [{ json:{ ok:false, erro:'get_id (ou id_fibra) é obrigatório' } }];
+      try{ r1 = await ixcWrite.call(this,'fh_onu_nao_autorizadas_22396',{ get_id:getId }); }
+      catch(e){ return [{ json:{ ok:false, etapa:'autorizar', erro:errInfo(e) } }]; }
+      idFibra = String((r1&&(r1.id||r1.id_cliente_fibra||r1.id_registro))||'').trim();
+      if(!idFibra || (r1&&r1.type==='error')) return [{ json:{ ok:false, etapa:'autorizar', erro:'não retornou id do cliente fibra', resposta:r1 } }];
+    }
+    // 2) completa o registro: busca o atual e mescla os vínculos
     let cur={}; try{ const g=await ixcList.call(this,'radpop_radio_cliente_fibra',{ qtype:'radpop_radio_cliente_fibra.id', query:idFibra, oper:'=', rp:'1', page:'1' }); cur=(g&&g.registros&&g.registros[0])||{}; }catch(_){}
+    const idTx = String(body.id_transmissor||cur.id_transmissor||'');
+    // VLAN: usa a informada; senão herda da OLT (vlan/vlan_pppoe mais comuns entre os vizinhos do transmissor)
+    let vlan=String(body.vlan||'').trim(), vlanP=String(body.vlan_pppoe||'').trim();
+    if((!vlan||!vlanP) && idTx){ try{
+      const gv=await ixcList.call(this,'radpop_radio_cliente_fibra',{ qtype:'radpop_radio_cliente_fibra.id_transmissor', query:idTx, oper:'=', rp:'80', page:'1', sortname:'radpop_radio_cliente_fibra.id', sortorder:'desc' });
+      const regs=(gv&&gv.registros)||[]; const cnt={};
+      regs.forEach(x=>{ const v=String(x.vlan||'').trim(); if(v&&v!=='0'){ const k=v+'|'+String(x.vlan_pppoe||'').trim(); cnt[k]=(cnt[k]||0)+1; } });
+      const top=Object.keys(cnt).sort((a,b)=>cnt[b]-cnt[a])[0];
+      if(top){ const pr=top.split('|'); if(!vlan)vlan=pr[0]; if(!vlanP)vlanP=pr[1]||''; }
+    }catch(_){} }
     const upd = Object.assign({}, cur, {
       id: idFibra,
       id_login:       String(body.id_login||cur.id_login||''),
       id_contrato:    String(body.id_contrato||cur.id_contrato||''),
       id_perfil:      String(body.id_perfil||cur.id_perfil||''),
-      id_transmissor: String(body.id_transmissor||cur.id_transmissor||''),
+      id_transmissor: idTx,
       onu_tipo:       String(body.onu_tipo||cur.onu_tipo||''),
       mac:            String(body.mac||cur.mac||''),
       slotno:         String(body.slotno||cur.slotno||''),
       ponno:          String(body.ponno||cur.ponno||''),
+      vlan:           vlan||String(cur.vlan||''),
+      vlan_pppoe:     vlanP||String(cur.vlan_pppoe||''),
       tipo_autenticacao: 'MAC',
       nome:           String(body.nome||cur.nome||'')
     });
     let r2; try{ r2 = await ixcPut.call(this,'radpop_radio_cliente_fibra/'+idFibra, upd); }
     catch(e){ return [{ json:{ ok:false, etapa:'editar', id_cliente_fibra:idFibra, erro:errInfo(e), autorizar:r1 } }]; }
+    // Modo seguro: só completa o cadastro (NÃO grava na OLT)
+    if(String(body.somente_completar||'')==='1')
+      return [{ json:{ ok:!(r2&&r2.type==='error'), acao, etapa:'completar', id_cliente_fibra:idFibra, vlan, vlan_pppoe:vlanP, editar:r2 } }];
     // 3) gravar dispositivo → envia o comando/provisiona na OLT
     let r3; try{ r3 = await ixcWrite.call(this,'botao_gravar_dispositivo_22408',{ id:idFibra }); }
     catch(e){ return [{ json:{ ok:false, etapa:'gravar', id_cliente_fibra:idFibra, erro:errInfo(e), autorizar:r1, editar:r2 } }]; }
     const ok3 = !(r3 && r3.type==='error');
-    return [{ json:{ ok:ok3, acao, id_cliente_fibra:idFibra, bridge:String(body.bridge||'0'), autorizar:r1, editar:r2, gravar:r3 } }];
+    return [{ json:{ ok:ok3, acao, id_cliente_fibra:idFibra, vlan, vlan_pppoe:vlanP, bridge:String(body.bridge||'0'), autorizar:r1, editar:r2, gravar:r3 } }];
   }
   return [{ json:{ ok:false, erro:'ação não suportada: '+acao } }];
 } catch(e){
