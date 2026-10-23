@@ -136,6 +136,10 @@ try {
     const idProjeto = String(body.id_projeto||cur.id_projeto||lg.id_df_projeto||'');
     const idCaixa   = String(body.id_caixa_ftth||cur.id_caixa_ftth||lg.id_caixa_ftth||'');
     const portaFtth = String(body.porta_ftth!=null?body.porta_ftth:(cur.porta_ftth||lg.ftth_porta||''));
+    // Script do perfil → campo "comandos" (a OLT substitui as #variáveis# no gravar). Sem isso: "Campo de script em branco".
+    const idPerfil = String(body.id_perfil||cur.id_perfil||'');
+    let comandos = String(body.comandos||cur.comandos||'');
+    if(!comandos && idPerfil){ try{ const gp=await ixcList.call(this,'radpop_radio_cliente_fibra_perfil',{ qtype:'radpop_radio_cliente_fibra_perfil.id', query:idPerfil, oper:'=', rp:'1', page:'1' }); const pf=(gp&&gp.registros&&gp.registros[0]); if(pf&&pf.comando) comandos=String(pf.comando); }catch(_){} }
     // VLAN: usa a informada; senão herda da OLT (vlan/vlan_pppoe mais comuns entre os vizinhos do transmissor)
     let vlan=String(body.vlan||'').trim(), vlanP=String(body.vlan_pppoe||'').trim();
     if((!vlan||!vlanP) && idTx){ try{
@@ -160,6 +164,7 @@ try {
       ponno:          String(body.ponno||cur.ponno||''),
       vlan:           vlan||String(cur.vlan||''),
       vlan_pppoe:     vlanP||String(cur.vlan_pppoe||''),
+      comandos:       comandos,
       tipo_autenticacao: 'MAC',
       nome:           String(body.nome||cur.nome||lg.login||'')
     });
@@ -171,8 +176,10 @@ try {
     // 3) gravar dispositivo → envia o comando/provisiona na OLT
     let r3; try{ r3 = await ixcWrite.call(this,'botao_gravar_dispositivo_22408',{ id:idFibra }); }
     catch(e){ return [{ json:{ ok:false, etapa:'gravar', id_cliente_fibra:idFibra, erro:errInfo(e), autorizar:r1, editar:r2 } }]; }
-    const ok3 = !(r3 && r3.type==='error');
-    return [{ json:{ ok:ok3, acao, id_cliente_fibra:idFibra, vlan, vlan_pppoe:vlanP, bridge:String(body.bridge||'0'), autorizar:r1, editar:r2, gravar:r3 } }];
+    let ok3, gravarResumo;
+    if(typeof r3==='string'){ const low=r3.toLowerCase(); ok3=(low.includes('sucesso')||low.includes('success')||low.includes('thumbs-up'))&&!low.includes('falha')&&!low.includes('fail'); gravarResumo=r3.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim().slice(0,300); }
+    else { ok3=!(r3&&r3.type==='error'); gravarResumo=r3; }
+    return [{ json:{ ok:ok3, acao, id_cliente_fibra:idFibra, vlan, vlan_pppoe:vlanP, gravar_resumo:gravarResumo, autorizar:r1, editar:r2 } }];
   }
   return [{ json:{ ok:false, erro:'ação não suportada: '+acao } }];
 } catch(e){
