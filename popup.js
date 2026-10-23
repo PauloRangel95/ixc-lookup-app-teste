@@ -1360,39 +1360,59 @@ async function _osExecutar(idChamado){
 }
 // Dados coletados no encerramento (persistem entre as telas)
 let _encDados = {};
-let _encDiag = null; // cache de su_diagnostico (ativos)
-async function _encCarregarDiag(setor){
-  if (_encDiag) return _encDiag;
-  try {
-    // via webhook de teste (os-acao/listar) — a leitura de produção bloqueia su_diagnostico
-    const params = { qtype:'su_diagnostico.ativo', query:'S', oper:'=', page:'1', rp:'1000', sortname:'su_diagnostico.descricao', sortorder:'asc' };
-    const r = await fetch(WEBHOOK_OS_ACAO, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ acao:'listar', endpoint:'su_diagnostico', params }) }).then(x=>x.json());
-    let arr = (r && Array.isArray(r.registros)) ? r.registros : [];
-    // guarda o setor da OS p/ priorizar (não exclui — o assunto não é exposto na API)
-    _encDiag = arr; _encDiagSetor = setor||null;
-  } catch(e){ _encDiag = []; }
-  return _encDiag;
+// ── Diagnóstico POR ASSUNTO (regra do IXC) ──
+// O assunto da OS define o setor (su_oss_assunto.setor_su_oss_chamado); os diagnósticos
+// mostrados são SÓ os de su_diagnostico com esse id_setor. O assunto também diz se o
+// diagnóstico é obrigatório para finalizar (diagnostico_obrigatorio_finalizacao_os).
+let _encDiag = null;            // su_diagnostico do assunto (já filtrado por setor)
+let _encDiagSetor = null;       // setor_su_oss_chamado usado
+let _encDiagObrig = false;      // diagnóstico obrigatório p/ fechar?
+let _encDiagPromise = null;
+async function _encCarregarDiag(os){
+  _encDiag=null; _encDiagSetor=null; _encDiagObrig=false;
+  _encDiagPromise = (async ()=>{
+    try {
+      let setorDiag = (os && os.setor) || null;
+      const idAssunto = os && os.id_assunto;
+      if (idAssunto){
+        const ra = await fetch(WEBHOOK_OS_ACAO, { method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ acao:'listar', endpoint:'su_oss_assunto', params:{ qtype:'su_oss_assunto.id', query:String(idAssunto), oper:'=', rp:'1', page:'1' } }) }).then(x=>x.json());
+        const a = ra && Array.isArray(ra.registros) ? ra.registros[0] : null;
+        if (a){
+          if (a.setor_su_oss_chamado && String(a.setor_su_oss_chamado)!=='0') setorDiag = a.setor_su_oss_chamado;
+          _encDiagObrig = String(a.diagnostico_obrigatorio_finalizacao_os||'N')==='S';
+        }
+      }
+      _encDiagSetor = setorDiag;
+      const params = setorDiag
+        ? { qtype:'su_diagnostico.id_setor', query:String(setorDiag), oper:'=', rp:'1000', page:'1', sortname:'su_diagnostico.descricao', sortorder:'asc' }
+        : { qtype:'su_diagnostico.ativo',    query:'S',             oper:'=', rp:'1000', page:'1', sortname:'su_diagnostico.descricao', sortorder:'asc' };
+      const r = await fetch(WEBHOOK_OS_ACAO, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ acao:'listar', endpoint:'su_diagnostico', params }) }).then(x=>x.json());
+      const arr = (r && Array.isArray(r.registros)) ? r.registros : [];
+      _encDiag = arr.filter(d=>String(d.ativo||'S')==='S');
+    } catch(e){ _encDiag = []; }
+    return _encDiag;
+  })();
+  return _encDiagPromise;
 }
-let _encDiagSetor = null;
 function _encDiagWire(ov){
   const inp=ov.querySelector('#enc-diag-busca'), lista=ov.querySelector('#enc-diag-lista');
   if(!inp||!lista) return;
   const pinta=(term)=>{
     term=(term||'').trim().toUpperCase();
-    if(!_encDiag){ lista.innerHTML='<div class="olt-status-msg cinza">Carregando diagnósticos...</div>'; return; }
+    if(!_encDiag){ lista.innerHTML='<div class="olt-status-msg cinza">Carregando diagnósticos do assunto...</div>'; return; }
     let arr=_encDiag;
     if(term) arr=arr.filter(d=>String(d.descricao||'').toUpperCase().indexOf(term)>=0);
-    else if(_encDiagSetor){ const s=arr.filter(d=>String(d.id_setor)===String(_encDiagSetor)); if(s.length) arr=s; } // prioriza o setor da OS
-    arr=arr.slice(0,80);
-    if(!arr.length){ lista.innerHTML='<div class="empty">Nada encontrado.</div>'; return; }
+    const tot=arr.length; arr=arr.slice(0,120);
+    if(!arr.length){ lista.innerHTML='<div class="empty">Nenhum diagnóstico'+(term?' para "'+term+'"':' cadastrado para este assunto')+'.</div>'; return; }
     lista.innerHTML=arr.map(d=>{
       const sel=String(_encDados.id_su_diagnostico||'')===String(d.id);
       return '<div data-diag="'+d.id+'" data-desc="'+String(d.descricao||'').replace(/"/g,'&quot;')+'" style="padding:6px 8px;border-radius:6px;cursor:pointer;font-size:12px;margin-bottom:3px;border:1px solid '+(sel?'var(--acc)':'var(--b)')+';background:'+(sel?'rgba(0,180,255,.12)':'var(--bg)')+';color:var(--tx)">'+(sel?'✓ ':'')+d.descricao+'</div>';
-    }).join('');
+    }).join('')+(tot>120?'<div style="font-size:10px;color:var(--tx2);margin-top:4px">+'+(tot-120)+' — refine a busca</div>':'');
   };
   inp.oninput=()=>pinta(inp.value);
   lista.onclick=(e)=>{ const row=e.target.closest('[data-diag]'); if(!row) return; _encDados.id_su_diagnostico=row.getAttribute('data-diag'); _encDados.diag_desc=row.getAttribute('data-desc'); pinta(inp.value); };
-  if(!_encDiag){ _encCarregarDiag().then(()=>pinta(inp.value)); } else pinta('');
+  pinta(''); if(!_encDiag && _encDiagPromise) _encDiagPromise.then(()=>pinta(inp.value));
 }
 // ── Anexos: upload (base64) + geração de imagem a partir dos dados que já temos ──
 async function _encUploadAnexo(dataUrl, nome, descricao){
@@ -1553,14 +1573,18 @@ function _osAtendimento(idChamado){
   const _lgIdx = _lgs.findIndex(function(l){return String(l.id)===String(o.id_login);});
   const _lg = _lgIdx>=0 ? _lgs[_lgIdx] : null;
   _encDados = { id_chamado:String(idChamado), relato:'', id_login:String(o.id_login||''), login_pppoe:(_lg&&_lg.login)||'', login_idx:(_lgIdx>=0?_lgIdx:0) };
-  _encCarregarDiag(o.setor);
+  _encCarregarDiag(o);
   let status = String(o.status||'');
   let idx = 0;
   const emConstr = (txt)=>'<div style="padding:18px 8px;text-align:center;color:var(--tx2);font-size:12px">🚧 '+txt+'<br><small>em construção</small></div>';
   const passos = [
-    { ic:'🩺', titulo:'Diagnóstico', render:()=>(
-        _encDados.diag_desc?'<div style="font-size:12px;color:var(--g);margin-bottom:6px">Selecionado: <strong>'+_encDados.diag_desc+'</strong></div>':'<div style="font-size:11px;color:var(--tx2);margin-bottom:6px">Busque e selecione o diagnóstico do atendimento.</div>')
-        +'<input id="enc-diag-busca" placeholder="🔎 buscar diagnóstico..." style="width:100%;padding:7px 8px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx);margin-bottom:6px"><div id="enc-diag-lista" style="max-height:190px;overflow-y:auto"></div>',
+    { ic:'🩺', titulo:'Diagnóstico', render:()=>{
+        const obrig=_encDiagObrig?' <span style="color:var(--r);font-weight:700">(obrigatório)</span>':'';
+        const head=_encDados.diag_desc
+          ? '<div style="font-size:12px;color:var(--g);margin-bottom:6px">Selecionado: <strong>'+_encDados.diag_desc+'</strong></div>'
+          : '<div style="font-size:11px;color:var(--tx2);margin-bottom:6px">Diagnósticos do assunto desta OS'+obrig+' — busque e selecione.</div>';
+        return head
+        +'<input id="enc-diag-busca" placeholder="🔎 buscar diagnóstico..." style="width:100%;padding:7px 8px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx);margin-bottom:6px"><div id="enc-diag-lista" style="max-height:190px;overflow-y:auto"></div>'; },
       after:(ov)=>_encDiagWire(ov) },
     { ic:'📝', titulo:'Relato', render:()=>{ if(!(_encDados.relato||'').trim()) _encDados.relato=_encRelatoPadrao();
         return '<label style="font-size:12px;color:var(--tx);font-weight:600">Relato do técnico *</label>'
@@ -1636,7 +1660,7 @@ function _osAtendimento(idChamado){
     if(q('at-desloc')) q('at-desloc').onclick=async function(){ this.disabled=true; setMsg('Registrando...','var(--tx2)'); const {ok,r}=await _atAcao('deslocamento'); if(ok){ status='DS'; o.status='DS'; toast('Deslocamento iniciado ✓','ok'); render(); } else { this.disabled=false; setMsg('Falha: '+((r&&r.erro)||(r&&r.resposta&&r.resposta.message)||'erro')); } };
     if(q('at-exec')) q('at-exec').onclick=async function(){ this.disabled=true; setMsg('Registrando...','var(--tx2)'); const {ok,r}=await _atAcao('executar'); if(ok){ status='EX'; o.status='EX'; idx=0; toast('Execução iniciada ✓','ok'); render(); } else { this.disabled=false; setMsg('Falha: '+((r&&r.erro)||(r&&r.resposta&&r.resposta.message)||'erro')); } };
     if(q('at-reag')) q('at-reag').onclick=async function(){ if(!confirm('Marcar a OS para AGENDAMENTO? Ela sai do seu atendimento (O&M reagenda).')) return; const motivo=(prompt('Motivo (opcional):')||'').trim(); this.disabled=true; const {ok,r}=await _atAcao('reagendar',{mensagem:motivo||'Marcada para agendamento pelo técnico.'}); if(ok){ toast('OS marcada p/ agendamento ✓','ok'); fechar(); _mosState.osAll=null; setTimeout(abrirMinhasOS,700);} else { this.disabled=false; setMsg('Falha: '+((r&&r.erro)||(r&&r.resposta&&r.resposta.message)||'erro')); } };
-    if(q('at-fim')) q('at-fim').onclick=async function(){ salvarRelato(); if(!(_encDados.relato||'').trim()){ setMsg('Preencha o Relato (passo 📝).'); return; } if(!confirm('Encerrar a OS #'+idChamado+'?')) return; this.disabled=true; this.textContent='⏳...'; const {ok,r}=await _atAcao('finalizar',{mensagem:_encDados.relato.trim(), id_su_diagnostico:(_encDados.id_su_diagnostico||'')}); if(ok){ toast('OS encerrada ✓','ok'); fechar(); _mosState.osAll=null; setTimeout(abrirMinhasOS,700);} else { this.disabled=false; this.textContent='✅ Encerrar OS'; setMsg('Falha: '+((r&&r.erro)||(r&&r.resposta&&r.resposta.message)||'erro')); } };
+    if(q('at-fim')) q('at-fim').onclick=async function(){ salvarRelato(); if(!(_encDados.relato||'').trim()){ setMsg('Preencha o Relato (passo 📝).'); return; } if(_encDiagObrig && !(_encDados.id_su_diagnostico||'').trim()){ setMsg('Diagnóstico é obrigatório para este assunto (passo 🩺).'); return; } if(!confirm('Encerrar a OS #'+idChamado+'?')) return; this.disabled=true; this.textContent='⏳...'; const {ok,r}=await _atAcao('finalizar',{mensagem:_encDados.relato.trim(), id_su_diagnostico:(_encDados.id_su_diagnostico||'')}); if(ok){ toast('OS encerrada ✓','ok'); fechar(); _mosState.osAll=null; setTimeout(abrirMinhasOS,700);} else { this.disabled=false; this.textContent='✅ Encerrar OS'; setMsg('Falha: '+((r&&r.erro)||(r&&r.resposta&&r.resposta.message)||'erro')); } };
   }
   ov.querySelector('#at-x').onclick=fechar;
   ov.addEventListener('click',e=>{ if(e.target===ov) fechar(); });
