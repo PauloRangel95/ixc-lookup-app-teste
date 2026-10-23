@@ -1368,8 +1368,9 @@ let _encDiag = null;            // su_diagnostico do assunto (já filtrado por s
 let _encDiagSetor = null;       // setor_su_oss_chamado usado
 let _encDiagObrig = false;      // diagnóstico obrigatório p/ fechar?
 let _encDiagPromise = null;
+let _encResp = null;            // resposta padrão do assunto (su_oss_respostas) {id,titulo,texto}
 async function _encCarregarDiag(os){
-  _encDiag=null; _encDiagSetor=null; _encDiagObrig=false;
+  _encDiag=null; _encDiagSetor=null; _encDiagObrig=false; _encResp=null;
   _encDiagPromise = (async ()=>{
     try {
       let setorDiag = (os && os.setor) || null;
@@ -1381,6 +1382,17 @@ async function _encCarregarDiag(os){
         if (a){
           if (a.setor_su_oss_chamado && String(a.setor_su_oss_chamado)!=='0') setorDiag = a.setor_su_oss_chamado;
           _encDiagObrig = String(a.diagnostico_obrigatorio_finalizacao_os||'N')==='S';
+          // Resposta padrão do assunto (finalização tem prioridade sobre a geral)
+          const idResp = (a.id_resposta_padrao_finalizacao && a.id_resposta_padrao_finalizacao!=='0') ? a.id_resposta_padrao_finalizacao
+                        : ((a.id_resposta_padrao && a.id_resposta_padrao!=='0') ? a.id_resposta_padrao : null);
+          if (idResp){
+            try {
+              const rr = await fetch(WEBHOOK_OS_ACAO, { method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({ acao:'listar', endpoint:'su_oss_respostas', params:{ qtype:'su_oss_respostas.id', query:String(idResp), oper:'=', rp:'1', page:'1' } }) }).then(x=>x.json());
+              const rp = rr && Array.isArray(rr.registros) ? rr.registros[0] : null;
+              if (rp && String(rp.ativo||'S')==='S') _encResp = { id:String(rp.id), titulo:String(rp.titulo||''), texto:String(rp.resposta||'') };
+            } catch(_){}
+          }
         }
       }
       _encDiagSetor = setorDiag;
@@ -1391,6 +1403,8 @@ async function _encCarregarDiag(os){
       const arr = (r && Array.isArray(r.registros)) ? r.registros : [];
       _encDiag = arr.filter(d=>String(d.ativo||'S')==='S');
     } catch(e){ _encDiag = []; }
+    // Pré-preenche o relato assim que soubermos a resposta padrão (se o técnico ainda não digitou)
+    if (_encDados && !(_encDados.relato||'').trim()){ try{ _encDados.relato=_encRelatoPadrao(); }catch(_){} }
     return _encDiag;
   })();
   return _encDiagPromise;
@@ -1508,8 +1522,21 @@ function _encRelatoPadrao(){
   if (equip||serial||mac) L.push('• Equipamento: '+[equip, serial?('S/N '+serial):'', mac?('MAC '+mac):''].filter(Boolean).join(' · '));
   if (cx.nome||oz.porta!=null) L.push('• CTO/Porta: '+(cx.nome||'-')+' / '+(oz.porta!=null?oz.porta:'-')+(oz.drop_m!=null?('  · Drop '+oz.drop_m+' m'):''));
   if (oc.sinal_onu!=null||oc.olt) L.push('• Sinal ONU: '+(oc.sinal_onu!=null?oc.sinal_onu+' dBm':'-')+'  · OLT '+(oc.olt||'-')+' '+(oc.slot_pon_onu||''));
-  L.push(''); L.push('Serviço executado: ');
+  // Resposta padrão do assunto (checklist oficial) vem quando o assunto tiver texto
+  if (_encResp && _encResp.texto.trim()){
+    L.push(''); L.push('— RESPOSTA PADRÃO'+(_encResp.titulo?(': '+_encResp.titulo):'')+' —'); L.push(_encResp.texto.trim());
+  } else {
+    L.push(''); L.push('Serviço executado: ');
+  }
   return L.join('\n');
+}
+// Preenche o textarea do relato quando o assunto (e sua resposta padrão) terminar de carregar.
+function _encRelatoWire(ov){
+  const ta=ov.querySelector('#enc-relato'); if(!ta) return;
+  if((ta.value||'').trim()) return;
+  const fill=()=>{ if((ta.value||'').trim()) return; if(!(_encDados.relato||'').trim()){ try{_encDados.relato=_encRelatoPadrao();}catch(_){}} ta.value=_encDados.relato||''; };
+  if(_encDiagPromise && !_encDiag){ const ph=ta.placeholder; ta.placeholder='Carregando modelo do assunto...'; _encDiagPromise.then(()=>{ fill(); ta.placeholder=ph; }); }
+  else fill();
 }
 function _encCardEl(tipo){
   const i = (_encDados && _encDados.login_idx!=null) ? _encDados.login_idx : 0;
@@ -1586,10 +1613,11 @@ function _osAtendimento(idChamado){
         return head
         +'<input id="enc-diag-busca" placeholder="🔎 buscar diagnóstico..." style="width:100%;padding:7px 8px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx);margin-bottom:6px"><div id="enc-diag-lista" style="max-height:190px;overflow-y:auto"></div>'; },
       after:(ov)=>_encDiagWire(ov) },
-    { ic:'📝', titulo:'Relato', render:()=>{ if(!(_encDados.relato||'').trim()) _encDados.relato=_encRelatoPadrao();
-        return '<label style="font-size:12px;color:var(--tx);font-weight:600">Relato do técnico *</label>'
-        +'<div style="font-size:10px;color:var(--tx2);margin:3px 0 2px">Pré-preenchido com os dados de validação — complete o "Serviço executado".</div>'
-        +'<textarea id="enc-relato" rows="9" style="width:100%;margin-top:4px;padding:8px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx);font-family:inherit;font-size:12px" placeholder="O que foi feito no atendimento...">'+(_encDados.relato||'')+'</textarea>'; } },
+    { ic:'📝', titulo:'Relato', render:()=>
+        '<label style="font-size:12px;color:var(--tx);font-weight:600">Relato do técnico *</label>'
+        +'<div style="font-size:10px;color:var(--tx2);margin:3px 0 2px">Pré-preenchido com os dados de validação'+(_encResp?' + resposta padrão do assunto':'')+' — complete o atendimento.</div>'
+        +'<textarea id="enc-relato" rows="10" style="width:100%;margin-top:4px;padding:8px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx);font-family:inherit;font-size:12px" placeholder="O que foi feito no atendimento...">'+(_encDados.relato||'')+'</textarea>',
+      after:(ov)=>_encRelatoWire(ov) },
     { ic:'📡', titulo:'Autorizar ONU',        render:()=>emConstr('Autorizar ONU (IXC→OLT)') },
     { ic:'⚙️', titulo:'Configurar Dispositivo', render:()=>emConstr('Configurar Dispositivo (PPPoE)') },
     { ic:'📦', titulo:'Produtos / materiais',  render:()=>emConstr('Produtos / materiais') },
