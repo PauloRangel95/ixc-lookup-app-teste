@@ -1414,19 +1414,82 @@ function _encImgTexto(titulo, linhas){
   return cv.toDataURL('image/png');
 }
 // "Print" do card REAL do PWA (igual à tela) via html2canvas. Fallback = desenho de texto.
-async function _encSnapEl(el){
-  if (!el || typeof html2canvas!=='function') return null;
+// Emoldura qualquer nó (card real clonado OU card montado) com respiro e fundo escuro, e captura.
+async function _encSnapWrap(node){
+  if (!node || typeof html2canvas!=='function') return null;
   let wrap=null;
   try {
-    const pad=22, w=Math.max(360, el.offsetWidth||360);
+    const pad=22;
     wrap=document.createElement('div');
-    wrap.style.cssText='position:fixed;left:-10000px;top:0;padding:'+pad+'px;background:#0f1420;width:'+(w+pad*2)+'px;box-sizing:border-box';
-    const clone=el.cloneNode(true); clone.style.margin='0';
-    wrap.appendChild(clone); document.body.appendChild(wrap);
+    wrap.style.cssText='position:fixed;left:-10000px;top:0;padding:'+pad+'px;background:#0f1420;box-sizing:border-box';
+    node.style.margin='0';
+    wrap.appendChild(node); document.body.appendChild(wrap);
     const cv = await html2canvas(wrap, { backgroundColor:'#0f1420', scale:2, useCORS:true, logging:false });
     return cv.toDataURL('image/png');
   } catch(e){ return null; }
   finally { if (wrap && wrap.parentNode) wrap.parentNode.removeChild(wrap); }
+}
+async function _encSnapEl(el){
+  if (!el) return null;
+  const clone=el.cloneNode(true);
+  clone.style.width=(el.offsetWidth||360)+'px'; clone.style.maxWidth='none';
+  return await _encSnapWrap(clone);
+}
+// Card "resumo" montado (título + linhas chave:valor) no visual do PWA.
+function _encResumoCard(titulo, rows){
+  const esc=s=>String(s==null?'':s).replace(/[<>]/g,'');
+  const card=document.createElement('div');
+  card.style.cssText='width:430px;background:#141b2a;border:1px solid #243049;border-radius:10px;padding:14px 16px;font-family:system-ui,Segoe UI,sans-serif';
+  let h='<div style="color:#00c4ff;font-weight:800;font-size:14px;letter-spacing:.5px;margin-bottom:10px">'+esc(titulo)+'</div>';
+  (rows||[]).filter(r=>r&&r[1]!=null&&String(r[1]).trim()!=='').forEach(r=>{
+    h+='<div style="display:flex;justify-content:space-between;gap:14px;padding:5px 0;border-bottom:1px solid #1c2740;font-size:13px">'
+      +'<span style="color:#8aa0c0;white-space:nowrap">'+esc(r[0])+'</span>'
+      +'<span style="color:#e6edf6;font-weight:600;text-align:right">'+esc(r[1])+'</span></div>';
+  });
+  card.innerHTML=h; return card;
+}
+// Resumo IXC — dados essenciais pra validação sistêmica (sem senha, por segurança).
+async function _encImgIXC(){
+  const d=dadosAtual||{}; const cl=d.cliente||{}, c=d.contrato||{};
+  const lg=(d.logins||[]).find(l=>String(l.id)===String(_encDados.id_login))||(d.logins||[])[0]||{};
+  const co=(d.comodatos||[])[0]||{};
+  const rows=[
+    ['Cliente', cl.nome],
+    ['Contrato', (c.numero||c.id)?('#'+(c.numero||c.id)):null],
+    ['Plano', c.plano],
+    ['Status', c.status_acesso||c.status],
+    ['Login PPPoE', lg.login],
+    ['IP', lg.ip],
+    ['MAC cliente', lg.mac],
+    ['ONU MAC', lg.onu_mac],
+    ['Equipamento', co.produto||co.nome_produto||co.nome],
+    ['Modelo', co.modelo||co.nome_modelo],
+    ['Serial', co.serial||co.numero_serie||co.sn],
+    ['MAC comodato', co.mac||co.mac_address],
+    ['Caixa FTTH', lg.caixa_ftth],
+    ['Porta FTTH', lg.ftth_porta]
+  ];
+  return await _encSnapWrap(_encResumoCard('Resumo IXC — dados de validação', rows));
+}
+// Relato pré-preenchido e enriquecido (o técnico valida/complementa).
+function _encRelatoPadrao(){
+  const d=dadosAtual||{}; const cl=d.cliente||{}, c=d.contrato||{};
+  const lg=(d.logins||[]).find(l=>String(l.id)===String(_encDados.id_login))||(d.logins||[])[0]||{};
+  const co=(d.comodatos||[])[0]||{};
+  const equip=co.produto||co.nome_produto||co.modelo||'';
+  const serial=co.serial||co.numero_serie||co.sn||'';
+  const mac=co.mac||co.mac_address||'';
+  const oc=((d._olt_cloud||{})[_encDados.id_login])||{};
+  const oz=((d._ozmap||{})[_encDados.id_login])||{}; const cx=oz.caixa||{};
+  const L=['ATENDIMENTO — dados de validação:'];
+  if (cl.nome) L.push('• Cliente: '+cl.nome+((c.numero||c.id)?('  (Contrato #'+(c.numero||c.id)+')'):''));
+  if (c.plano) L.push('• Plano: '+c.plano);
+  if (lg.login) L.push('• Login PPPoE: '+lg.login);
+  if (equip||serial||mac) L.push('• Equipamento: '+[equip, serial?('S/N '+serial):'', mac?('MAC '+mac):''].filter(Boolean).join(' · '));
+  if (cx.nome||oz.porta!=null) L.push('• CTO/Porta: '+(cx.nome||'-')+' / '+(oz.porta!=null?oz.porta:'-')+(oz.drop_m!=null?('  · Drop '+oz.drop_m+' m'):''));
+  if (oc.sinal_onu!=null||oc.olt) L.push('• Sinal ONU: '+(oc.sinal_onu!=null?oc.sinal_onu+' dBm':'-')+'  · OLT '+(oc.olt||'-')+' '+(oc.slot_pon_onu||''));
+  L.push(''); L.push('Serviço executado: ');
+  return L.join('\n');
 }
 function _encCardEl(tipo){
   const i = (_encDados && _encDados.login_idx!=null) ? _encDados.login_idx : 0;
@@ -1457,8 +1520,10 @@ function _encAnexosWire(ov){
   const addFeito=(n)=>{ _encDados._anexos=_encDados._anexos||[]; _encDados._anexos.push(n); const el=ov.querySelector('#enc-anexos-feitos'); if(el) el.innerHTML=_encDados._anexos.map(a=>'✓ '+a).join('<br>'); };
   ov.querySelectorAll('[data-encanexo]').forEach(b=>b.onclick=async function(){
     const tipo=this.getAttribute('data-encanexo'); const orig=this.textContent; this.disabled=true; this.textContent='⏳';
-    const img = await (tipo==='potencia'?_encImgPotencia():_encImgOZmap());
-    const desc = tipo==='potencia'?'Potência da ONU (OLT Cloud)':'Rede OZmap';
+    let img, desc;
+    if (tipo==='potencia'){ img=await _encImgPotencia(); desc='Potência da ONU (OLT Cloud)'; }
+    else if (tipo==='ozmap'){ img=await _encImgOZmap(); desc='Rede OZmap'; }
+    else { img=await _encImgIXC(); desc='Resumo IXC (validação)'; }
     if(!img){ toast('Sem dados de '+desc,'err'); this.disabled=false; this.textContent=orig; return; }
     const ok=await _encUploadAnexo(img, tipo+'.png', desc);
     if(ok){ toast('Anexado ✓','ok'); addFeito(desc); this.textContent='✓'; } else { this.disabled=false; this.textContent=orig; toast('Falha ao anexar','err'); }
@@ -1497,13 +1562,15 @@ function _osAtendimento(idChamado){
         _encDados.diag_desc?'<div style="font-size:12px;color:var(--g);margin-bottom:6px">Selecionado: <strong>'+_encDados.diag_desc+'</strong></div>':'<div style="font-size:11px;color:var(--tx2);margin-bottom:6px">Busque e selecione o diagnóstico do atendimento.</div>')
         +'<input id="enc-diag-busca" placeholder="🔎 buscar diagnóstico..." style="width:100%;padding:7px 8px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx);margin-bottom:6px"><div id="enc-diag-lista" style="max-height:190px;overflow-y:auto"></div>',
       after:(ov)=>_encDiagWire(ov) },
-    { ic:'📝', titulo:'Relato', render:()=>'<label style="font-size:12px;color:var(--tx);font-weight:600">Relato do técnico *</label>'
-        +'<textarea id="enc-relato" rows="4" style="width:100%;margin-top:6px;padding:8px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx);font-family:inherit" placeholder="O que foi feito no atendimento...">'+(_encDados.relato||'')+'</textarea>' },
+    { ic:'📝', titulo:'Relato', render:()=>{ if(!(_encDados.relato||'').trim()) _encDados.relato=_encRelatoPadrao();
+        return '<label style="font-size:12px;color:var(--tx);font-weight:600">Relato do técnico *</label>'
+        +'<div style="font-size:10px;color:var(--tx2);margin:3px 0 2px">Pré-preenchido com os dados de validação — complete o "Serviço executado".</div>'
+        +'<textarea id="enc-relato" rows="9" style="width:100%;margin-top:4px;padding:8px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx);font-family:inherit;font-size:12px" placeholder="O que foi feito no atendimento...">'+(_encDados.relato||'')+'</textarea>'; } },
     { ic:'📡', titulo:'Autorizar ONU',        render:()=>emConstr('Autorizar ONU (IXC→OLT)') },
     { ic:'⚙️', titulo:'Configurar Dispositivo', render:()=>emConstr('Configurar Dispositivo (PPPoE)') },
     { ic:'📦', titulo:'Produtos / materiais',  render:()=>emConstr('Produtos / materiais') },
     { ic:'📎', titulo:'Anexos', render:()=>'<div style="font-size:11px;color:var(--tx2);margin-bottom:6px">Anexos automáticos (reaproveita o que já temos) + foto:</div>'
-        +'<div class="btns"><button class="btn-sm btn-blue" data-encanexo="potencia">⚡ Potência (OLT)</button><button class="btn-sm btn-blue" data-encanexo="ozmap">🗺️ OZmap</button></div>'
+        +'<div class="btns"><button class="btn-sm btn-blue" data-encanexo="ixc">📄 Resumo IXC</button><button class="btn-sm btn-blue" data-encanexo="potencia">⚡ Potência (OLT)</button><button class="btn-sm btn-blue" data-encanexo="ozmap">🗺️ OZmap</button></div>'
         +'<div style="margin-top:8px"><label style="font-size:12px;color:var(--tx)">📷 Foto do atendimento</label><input type="file" id="enc-foto" accept="image/*" capture="environment" style="display:block;margin-top:4px;font-size:12px;color:var(--tx)"></div>'
         +'<div id="enc-anexos-feitos" style="font-size:11px;color:var(--g);margin-top:8px">'+((_encDados._anexos||[]).map(a=>'✓ '+a).join('<br>'))+'</div>',
       after:(ov)=>_encAnexosWire(ov) },
