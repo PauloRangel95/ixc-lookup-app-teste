@@ -1499,6 +1499,59 @@ function _encOnuWire(ov){
     }catch(e){ this.disabled=false; this.textContent='📡 Autorizar ONU na OLT'; toast('Erro ao autorizar','err'); }
   };
 }
+// ── Produtos/materiais: lista o almox do técnico e lança na OS (baixa estoque) ──
+let _prodAlmox=null, _prodList=null, _prodPromise=null;
+async function _encProdCarregar(){
+  if(_prodList) return _prodPromise;
+  _prodPromise=(async()=>{
+    try{
+      const r=await fetch(WEBHOOK_OS_ACAO,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({acao:'os_produtos',nome_tecnico:(_mosState.funcNome||'')})}).then(x=>x.json());
+      if(r&&r.ok){ _prodAlmox={id:String(r.id_almox),nome:r.almox}; _prodList=r.produtos||[]; } else { _prodList=[]; }
+    }catch(e){ _prodList=[]; }
+  })();
+  return _prodPromise;
+}
+function _encProdWire(ov){
+  const inp=ov.querySelector('#prod-busca'), lista=ov.querySelector('#prod-lista'), feitos=ov.querySelector('#prod-feitos');
+  if(!lista) return;
+  const addFeito=(q,nome)=>{ _encDados._produtos=_encDados._produtos||[]; _encDados._produtos.push({q,nome}); if(feitos) feitos.innerHTML=_encDados._produtos.map(p=>'✓ '+p.q+'x '+p.nome).join('<br>'); };
+  const isOnu=(desc)=>/\bON[UT]\b|ONT|ONU/.test(String(desc||'').toUpperCase());
+  const pinta=(term)=>{
+    if(!_prodList){ lista.innerHTML='<div class="olt-status-msg cinza">Carregando materiais do seu almox...</div>'; return; }
+    if(!_prodList.length){ lista.innerHTML='<div class="empty">Nenhum material com saldo no seu almoxarifado'+(_prodAlmox?' ('+_prodAlmox.nome+')':'')+'.</div>'; return; }
+    term=(term||'').trim().toUpperCase();
+    let arr=_prodList; if(term) arr=arr.filter(p=>String(p.descricao||'').toUpperCase().indexOf(term)>=0);
+    const tot=arr.length; arr=arr.slice(0,60);
+    lista.innerHTML=arr.map(p=>{
+      const onu=isOnu(p.descricao);
+      return '<div style="padding:6px 8px;border:1px solid var(--b);border-radius:6px;margin-bottom:4px;font-size:12px;color:var(--tx)">'
+        +'<div style="display:flex;justify-content:space-between;gap:8px"><span>'+(onu?'📟 ':'')+String(p.descricao||'').replace(/</g,'')+'</span><span style="color:var(--tx2);white-space:nowrap">saldo '+p.saldo+' · R$'+p.preco+'</span></div>'
+        +'<div style="display:flex;gap:6px;margin-top:4px;align-items:center">'
+          +'<input type="number" min="0" step="any" value="1" data-q="'+p.id_produto+'" style="width:64px;padding:4px;border:1px solid var(--b2);border-radius:5px;background:var(--bg);color:var(--tx)">'
+          +(onu?'<input placeholder="nº patrimônio" data-patr="'+p.id_produto+'" style="flex:1;min-width:0;padding:4px;border:1px solid var(--b2);border-radius:5px;background:var(--bg);color:var(--tx)">':'')
+          +'<button class="btn-sm btn-blue" data-lanc="'+p.id_produto+'">Lançar</button>'
+        +'</div></div>';
+    }).join('')+(tot>60?'<div style="font-size:10px;color:var(--tx2);margin-top:4px">+'+(tot-60)+' — refine a busca</div>':'');
+  };
+  if(inp) inp.oninput=()=>pinta(inp.value);
+  lista.onclick=async(e)=>{
+    const b=e.target.closest('[data-lanc]'); if(!b) return;
+    const id=b.getAttribute('data-lanc'); const p=(_prodList||[]).find(x=>String(x.id_produto)===String(id)); if(!p) return;
+    const q=((ov.querySelector('[data-q="'+id+'"]')||{}).value||'1').trim();
+    const patrEl=ov.querySelector('[data-patr="'+id+'"]'); const patr=patrEl?(patrEl.value||'').trim():'';
+    if(!(Number(q)>0)){ toast('Quantidade inválida','err'); return; }
+    if(isOnu(p.descricao)&&!patr){ toast('Informe o nº de patrimônio da ONU','err'); return; }
+    b.disabled=true; const orig=b.textContent; b.textContent='⏳';
+    const payload={ acao:'os_mov_produto', id_chamado:_encDados.id_chamado, id_produto:String(id), qtde:String(q),
+      id_almox:(_prodAlmox&&_prodAlmox.id)||'', valor_unitario:p.preco, id_unidade:p.id_unidade, id_class_fiscal:p.id_class_fiscal, descricao:p.descricao };
+    if(patr){ payload.imobilizado='S'; payload.patrimonio=patr; }
+    try{ const r=await fetch(WEBHOOK_OS_ACAO,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(x=>x.json());
+      if(r&&r.ok){ toast('Material lançado ✓','ok'); addFeito(q,p.descricao); b.textContent='✓'; }
+      else { b.disabled=false; b.textContent=orig; toast('Falha: '+((r&&(r.erro||(r.resposta&&r.resposta.message)))||'erro'),'err'); }
+    }catch(e){ b.disabled=false; b.textContent=orig; toast('Erro ao lançar','err'); }
+  };
+  if(_prodList) pinta(''); else { pinta(''); _encProdCarregar().then(()=>pinta(inp?inp.value:'')); }
+}
 // ── Anexos: upload (base64) + geração de imagem a partir dos dados que já temos ──
 async function _encUploadAnexo(dataUrl, nome, descricao){
   try {
@@ -1709,7 +1762,11 @@ function _osAtendimento(idChamado){
         +'</div>'; },
       after:(ov)=>_encOnuWire(ov) },
     { ic:'⚙️', titulo:'Configurar Dispositivo', render:()=>emConstr('Configurar Dispositivo (PPPoE)') },
-    { ic:'📦', titulo:'Produtos / materiais',  render:()=>emConstr('Produtos / materiais') },
+    { ic:'📦', titulo:'Produtos / materiais', render:()=>'<div style="font-size:11px;color:var(--tx2);margin-bottom:6px">Materiais do seu almoxarifado'+(_prodAlmox?' ('+_prodAlmox.nome+')':'')+'. Busque, defina a quantidade e lance (ONU = informe o patrimônio).</div>'
+        +'<input id="prod-busca" placeholder="🔎 buscar material..." style="width:100%;padding:7px 8px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx);margin-bottom:4px">'
+        +'<div id="prod-lista" style="max-height:220px;overflow-y:auto"></div>'
+        +'<div id="prod-feitos" style="font-size:11px;color:var(--g);margin-top:8px">'+((_encDados._produtos||[]).map(p=>'✓ '+p.q+'x '+p.nome).join('<br>'))+'</div>',
+      after:(ov)=>_encProdWire(ov) },
     { ic:'📎', titulo:'Anexos', render:()=>'<div style="font-size:11px;color:var(--tx2);margin-bottom:6px">Anexos automáticos (reaproveita o que já temos) + foto:</div>'
         +'<div class="btns"><button class="btn-sm btn-blue" data-encanexo="ixc">📄 Resumo IXC</button><button class="btn-sm btn-blue" data-encanexo="potencia">⚡ Potência (OLT)</button><button class="btn-sm btn-blue" data-encanexo="ozmap">🗺️ OZmap</button></div>'
         +'<div style="margin-top:8px"><label style="font-size:12px;color:var(--tx)">📷 Foto do atendimento</label><input type="file" id="enc-foto" accept="image/*" capture="environment" style="display:block;margin-top:4px;font-size:12px;color:var(--tx)"></div>'
