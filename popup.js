@@ -1413,7 +1413,22 @@ function _encImgTexto(titulo, linhas){
   x.strokeStyle='#2a3550'; x.strokeRect(1,1,W-2,H-2);
   return cv.toDataURL('image/png');
 }
-function _encImgPotencia(){
+// "Print" do card REAL do PWA (igual à tela) via html2canvas. Fallback = desenho de texto.
+async function _encSnapEl(el){
+  if (!el || typeof html2canvas!=='function') return null;
+  try {
+    const cv = await html2canvas(el, { backgroundColor:'#0f1420', scale:2, useCORS:true, logging:false,
+      windowWidth: document.documentElement.scrollWidth });
+    return cv.toDataURL('image/png');
+  } catch(e){ return null; }
+}
+function _encCardEl(tipo){
+  const i = (_encDados && _encDados.login_idx!=null) ? _encDados.login_idx : 0;
+  if (tipo==='potencia') return document.querySelector('#body-login-'+i+' .olt-section') || document.querySelector('.olt-section');
+  return document.getElementById('ozmap-'+i) || document.querySelector('.ozmap-section');
+}
+async function _encImgPotencia(){
+  const snap = await _encSnapEl(_encCardEl('potencia')); if (snap) return snap;
   const oc=(dadosAtual&&dadosAtual._olt_cloud)||{}; const o=oc[_encDados.id_login]; if(!o) return null;
   return _encImgTexto('Potência da ONU — OLT Cloud', [
     'Login: '+(_encDados.login_pppoe||_encDados.id_login||'-'),
@@ -1422,7 +1437,8 @@ function _encImgPotencia(){
     'Status: '+(o.status||'-')+'   Modelo: '+(o.modelo||'-'),
     'Coletado: '+new Date().toLocaleString('pt-BR') ]);
 }
-function _encImgOZmap(){
+async function _encImgOZmap(){
+  const snap = await _encSnapEl(_encCardEl('ozmap')); if (snap) return snap;
   const oz=(dadosAtual&&dadosAtual._ozmap)||{}; const d=oz[_encDados.id_login]; if(!d||!d.encontrado) return null;
   const cx=d.caixa||{};
   return _encImgTexto('Rede FTTH — OZmap', [
@@ -1435,7 +1451,7 @@ function _encAnexosWire(ov){
   const addFeito=(n)=>{ _encDados._anexos=_encDados._anexos||[]; _encDados._anexos.push(n); const el=ov.querySelector('#enc-anexos-feitos'); if(el) el.innerHTML=_encDados._anexos.map(a=>'✓ '+a).join('<br>'); };
   ov.querySelectorAll('[data-encanexo]').forEach(b=>b.onclick=async function(){
     const tipo=this.getAttribute('data-encanexo'); const orig=this.textContent; this.disabled=true; this.textContent='⏳';
-    const img = tipo==='potencia'?_encImgPotencia():_encImgOZmap();
+    const img = await (tipo==='potencia'?_encImgPotencia():_encImgOZmap());
     const desc = tipo==='potencia'?'Potência da ONU (OLT Cloud)':'Rede OZmap';
     if(!img){ toast('Sem dados de '+desc,'err'); this.disabled=false; this.textContent=orig; return; }
     const ok=await _encUploadAnexo(img, tipo+'.png', desc);
@@ -1462,8 +1478,10 @@ function _osAtendimento(idChamado){
   const o = _mosState.osById && _mosState.osById[String(idChamado)];
   if(!o) return;
   const nome = (_mosState.clienteMap && _mosState.clienteMap[String(o.id_cliente)])||'';
-  const _lg = (dadosAtual && dadosAtual.logins ? dadosAtual.logins : []).find(function(l){return String(l.id)===String(o.id_login);});
-  _encDados = { id_chamado:String(idChamado), relato:'', id_login:String(o.id_login||''), login_pppoe:(_lg&&_lg.login)||'' };
+  const _lgs = (dadosAtual && dadosAtual.logins ? dadosAtual.logins : []);
+  const _lgIdx = _lgs.findIndex(function(l){return String(l.id)===String(o.id_login);});
+  const _lg = _lgIdx>=0 ? _lgs[_lgIdx] : null;
+  _encDados = { id_chamado:String(idChamado), relato:'', id_login:String(o.id_login||''), login_pppoe:(_lg&&_lg.login)||'', login_idx:(_lgIdx>=0?_lgIdx:0) };
   _encCarregarDiag(o.setor);
   let status = String(o.status||'');
   let idx = 0;

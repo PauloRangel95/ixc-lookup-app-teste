@@ -1,9 +1,9 @@
 /* IXC Lookup PWA — service worker.
  * Cacheia o "app shell" (UI) para instalar/abrir offline; nunca cacheia chamadas de API.
  */
-const CACHE = 'ixc-lookup-pwa-teste-v29';
+const CACHE = 'ixc-lookup-pwa-teste-v30';
 const SHELL = [
-  './', './index.html', './chrome-shim.js', './auth.js', './logger.js', './popup.js', './permissoes.js',
+  './', './index.html', './html2canvas.min.js', './chrome-shim.js', './auth.js', './logger.js', './popup.js', './permissoes.js',
   './relatorio.html', './relatorio.js', './manifest.webmanifest',
   './icons/icon128.png', './icons/icon192.png', './icons/icon512.png'
 ];
