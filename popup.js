@@ -1397,8 +1397,9 @@ function _encDiagWire(ov){
 // ── Anexos: upload (base64) + geração de imagem a partir dos dados que já temos ──
 async function _encUploadAnexo(dataUrl, nome, descricao){
   try {
+    const b64 = String(dataUrl).replace(/^data:[^;]+;base64,/,''); // IXC quer o base64 CRU
     const r = await fetch(WEBHOOK_OS_ACAO, { method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ acao:'anexo', id_chamado:_encDados.id_chamado, arquivo:dataUrl, nome_arquivo:nome, descricao:descricao||nome }) }).then(x=>x.json());
+      body: JSON.stringify({ acao:'anexo', id_chamado:_encDados.id_chamado, arquivo:b64, nome_arquivo:nome, descricao:descricao||nome }) }).then(x=>x.json());
     return !!(r && r.ok && r.resposta && (r.resposta.type==='success' || r.resposta.id || r.id));
   } catch(e){ return false; }
 }
