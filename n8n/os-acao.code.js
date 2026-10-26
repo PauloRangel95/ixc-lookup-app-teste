@@ -71,23 +71,35 @@ try {
     return [{ json:{ ok:true, id_almox:idAlmox, almox:almoxDesc, total:produtos.length, produtos } }];
   }
 
-  // ACS: achar o aparelho (CPE/TR-069) do cliente pelo login (READ). body: { id_login }
+  // ACS: achar o aparelho (CPE/TR-069) do cliente pelo login + WiFi do cadastro do login (READ). body: { id_login }
   if (acao === 'acs_dispositivo'){
     const idLogin = String(body.id_login||'').trim();
     if(!idLogin) return [{ json:{ ok:false, erro:'id_login é obrigatório' } }];
     const r = await ixcList.call(this,'acs_device_grid',{ qtype:'acs_device.id_login', query:idLogin, oper:'=', rp:'10', page:'1', sortname:'acs_device.id', sortorder:'desc' });
     let regs=(r&&r.registros); if(regs&&regs.rows) regs=regs.rows; regs=Array.isArray(regs)?regs:[];
     const devs=regs.map(x=>({ id:String(x.id), model:x.model, manufacturer:x.manufacturer, serial:x.serial_number, status:x.status, ipv4:x.ipv4, last_inform:x.last_inform, internet:x.status_internet_contrato, primary:x.device_primary }));
-    return [{ json:{ ok:true, id_login:idLogin, total:devs.length, dispositivos:devs } }];
+    // WiFi do CADASTRO do login (radusuarios)
+    let wifi=null; try{ const gl=await ixcList.call(this,'radusuarios',{ qtype:'radusuarios.id', query:idLogin, oper:'=', rp:'1', page:'1' }); const lg=(gl&&gl.registros&&gl.registros[0])||{}; wifi={ ssid:String(lg.ssid_router_wifi||''), senha:String(lg.senha_rede_sem_fio||''), ssid5:String(lg.ssid_router_wifi_5ghz||''), senha5:String(lg.senha_rede_sem_fio_5ghz||'') }; }catch(_){}
+    return [{ json:{ ok:true, id_login:idLogin, total:devs.length, dispositivos:devs, wifi } }];
   }
-  // ACS: enviar WiFi ao aparelho (botaoAjax_30774). body: { id_device, ssid_router_wifi?, senha_router_wifi?, ssid_router_wifi_2?, senha_router_wifi_2? }
+  // ACS: enviar WiFi ao aparelho (botaoAjax_30774). Lê SSID/senhas do CADASTRO do login e empurra pro aparelho.
+  // body: { id_login } (acha o aparelho e o WiFi), ou { id_device } + campos ssid_router_wifi/senha_router_wifi/ssid_router_wifi_2/senha_router_wifi_2 pra sobrescrever.
   if (acao === 'acs_wifi'){
-    const id = String(body.id_device||body.id||'').trim();
-    if(!id) return [{ json:{ ok:false, erro:'id_device (acs_device.id) é obrigatório' } }];
-    const payload = { id: id };
-    ['ssid_router_wifi','senha_router_wifi','ssid_router_wifi_2','senha_router_wifi_2'].forEach(k=>{ if(body[k]!=null) payload[k]=String(body[k]); });
+    const idLogin = String(body.id_login||'').trim();
+    let id = String(body.id_device||body.id||'').trim();
+    if(!id && idLogin){ try{ const gd=await ixcList.call(this,'acs_device_grid',{ qtype:'acs_device.id_login', query:idLogin, oper:'=', rp:'1', page:'1', sortname:'acs_device.id', sortorder:'desc' }); let rg=(gd&&gd.registros); if(rg&&rg.rows)rg=rg.rows; const dev=(Array.isArray(rg)?rg[0]:null); if(dev&&dev.id) id=String(dev.id); }catch(_){} }
+    if(!id) return [{ json:{ ok:false, erro:'id_device (ou id_login com aparelho ACS) é obrigatório' } }];
+    // WiFi: usa o que veio no body; senão lê do login (mapeando nomes login→aparelho)
+    let ssid=body.ssid_router_wifi, senha=body.senha_router_wifi, ssid5=body.ssid_router_wifi_2, senha5=body.senha_router_wifi_2;
+    if((ssid==null||senha==null||ssid5==null||senha5==null) && idLogin){ try{ const gl=await ixcList.call(this,'radusuarios',{ qtype:'radusuarios.id', query:idLogin, oper:'=', rp:'1', page:'1' }); const lg=(gl&&gl.registros&&gl.registros[0])||{};
+      if(ssid==null) ssid=lg.ssid_router_wifi; if(senha==null) senha=lg.senha_rede_sem_fio; if(ssid5==null) ssid5=lg.ssid_router_wifi_5ghz; if(senha5==null) senha5=lg.senha_rede_sem_fio_5ghz; }catch(_){} }
+    const payload = { id:id };
+    if(ssid!=null) payload.ssid_router_wifi=String(ssid);
+    if(senha!=null) payload.senha_router_wifi=String(senha);
+    if(ssid5!=null) payload.ssid_router_wifi_2=String(ssid5);
+    if(senha5!=null) payload.senha_router_wifi_2=String(senha5);
     let r; try{ r = await ixcWrite.call(this,'botaoAjax_30774', payload); }catch(e){ return [{ json:{ ok:false, erro:errInfo(e), payload_enviado:payload } }]; }
-    const resumo = (typeof r==='string') ? r.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim().slice(0,300) : r;
+    const resumo = (typeof r==='string') ? r.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim().slice(0,400) : r;
     return [{ json:{ ok:!(r&&r.type==='error'), acao, id, payload_enviado:payload, resumo } }];
   }
 

@@ -1509,23 +1509,27 @@ function _encCfgWire(ov){
     const d=(r&&r.dispositivos&&r.dispositivos[0])||null;
     if(!d){ box.innerHTML='<div style="font-size:12px;color:var(--y)">⚠ Nenhum aparelho TR-069 (ACS) para este login. O roteador é configurado localmente (ex.: ONU bridge/Intelbras).</div>'; return; }
     _cfgDev=d;
+    const wf=r.wifi||{};
+    const esc=s=>String(s==null?'':s).replace(/"/g,'&quot;');
     const on=String(d.status||'').toLowerCase()==='online';
+    const inp=(id,ph,v)=>'<input id="'+id+'" placeholder="'+ph+'" value="'+esc(v)+'" style="flex:1;min-width:0;padding:6px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx)">';
     box.innerHTML='<div style="border:1px solid var(--b2);border-radius:8px;padding:10px;font-size:12px;color:var(--tx)">'
       +'<div style="display:flex;justify-content:space-between;gap:8px;margin-bottom:4px"><strong>'+String((d.manufacturer||'')+' '+(d.model||'')).replace(/</g,'')+'</strong>'+(on?'<span style="color:var(--g)">● online</span>':'<span style="color:var(--r)">● '+String(d.status||'offline').replace(/</g,'')+'</span>')+'</div>'
       +'<div style="color:var(--tx2)">Serial '+(d.serial||'-')+' · IP '+(d.ipv4||'-')+' · internet '+(d.internet==='A'?'OK':(d.internet||'-'))+'</div>'
       +'<div style="color:var(--tx2);font-size:10px">último inform: '+(d.last_inform||'-')+'</div></div>'
-      +'<div style="margin-top:8px;font-size:11px;color:var(--tx)">WiFi (envia pro aparelho via ACS):</div>'
-      +'<div style="display:flex;gap:6px;margin-top:4px"><input id="cfg-ssid" placeholder="Nome do WiFi (SSID)" style="flex:1;min-width:0;padding:6px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx)"><input id="cfg-senha" placeholder="Senha do WiFi" style="flex:1;min-width:0;padding:6px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx)"></div>'
+      +'<div style="margin-top:8px;font-size:11px;color:var(--tx)">WiFi do cadastro do login — confira e envie ao aparelho:</div>'
+      +'<div style="display:flex;gap:6px;margin-top:4px">'+inp('cfg-ssid','SSID 2.4G',wf.ssid)+inp('cfg-senha','Senha 2.4G',wf.senha)+'</div>'
+      +'<div style="display:flex;gap:6px;margin-top:4px">'+inp('cfg-ssid5','SSID 5G',wf.ssid5)+inp('cfg-senha5','Senha 5G',wf.senha5)+'</div>'
       +'<button class="btn-sm btn-blue" id="cfg-enviar" style="margin-top:6px;width:100%">📶 Enviar WiFi ao aparelho</button>'
       +'<div id="cfg-msg" style="font-size:11px;margin-top:4px;color:var(--tx2);word-break:break-word"></div>';
     const btn=ov.querySelector('#cfg-enviar');
     if(btn) btn.onclick=async function(){
       const ssid=(ov.querySelector('#cfg-ssid').value||'').trim(), senha=(ov.querySelector('#cfg-senha').value||'').trim();
-      if(!ssid&&!senha){ toast('Informe o nome e/ou senha do WiFi','err'); return; }
+      const ssid5=(ov.querySelector('#cfg-ssid5').value||'').trim(), senha5=(ov.querySelector('#cfg-senha5').value||'').trim();
+      if(!ssid&&!senha&&!ssid5&&!senha5){ toast('Nada de WiFi preenchido','err'); return; }
       this.disabled=true; this.textContent='⏳ Enviando...';
-      const payload={acao:'acs_wifi',id_device:_cfgDev.id};
-      if(ssid){ payload.ssid_router_wifi=ssid; payload.ssid_router_wifi_2=ssid; }
-      if(senha){ payload.senha_router_wifi=senha; payload.senha_router_wifi_2=senha; }
+      const payload={acao:'acs_wifi',id_login:_encDados.id_login,id_device:_cfgDev.id,
+        ssid_router_wifi:ssid, senha_router_wifi:senha, ssid_router_wifi_2:ssid5, senha_router_wifi_2:senha5};
       const m=ov.querySelector('#cfg-msg');
       try{ const r=await fetch(WEBHOOK_OS_ACAO,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(x=>x.json());
         if(r&&r.ok){ toast('WiFi enviado ✓','ok'); this.textContent='✓ Enviado'; if(m){m.style.color='var(--g)';m.textContent='✓ '+(typeof r.resumo==='string'?r.resumo.slice(0,160):'enviado');} }
