@@ -80,6 +80,15 @@ try {
     const caixas=regs.map(x=>({ id:String(x.id), nome:x.descricao, lat:parseFloat(x.latitude)||null, lng:parseFloat(x.longitude)||null, cap:x.capacidade, id_projeto:String(x.id_projeto||'') }));
     return [{ json:{ ok:true, id_transmissor:idTx, total:caixas.length, caixas } }];
   }
+  // PORTAS LIVRES de uma caixa (READ). body: { id_caixa_ftth }
+  if (acao === 'caixa_portas'){
+    const idCaixa = String(body.id_caixa_ftth||'').trim();
+    if(!idCaixa) return [{ json:{ ok:false, erro:'id_caixa_ftth é obrigatório' } }];
+    let cap=0; try{ const gc=await ixcList.call(this,'rad_caixa_ftth',{ qtype:'rad_caixa_ftth.id', query:idCaixa, oper:'=', rp:'1', page:'1' }); const c=(gc&&gc.registros&&gc.registros[0]); cap=parseInt(c&&c.capacidade)||0; }catch(_){}
+    let ocup=[]; try{ const gf=await ixcList.call(this,'radpop_radio_cliente_fibra',{ qtype:'radpop_radio_cliente_fibra.id_caixa_ftth', query:idCaixa, oper:'=', rp:'500', page:'1', sortname:'radpop_radio_cliente_fibra.id', sortorder:'desc' }); const regs=(gf&&gf.registros)||[]; ocup=[...new Set(regs.map(x=>String(x.porta_ftth)).filter(p=>p&&p!=='0'))]; }catch(_){}
+    const total=cap||16; const livres=[]; for(let p=1;p<=total;p++){ if(ocup.indexOf(String(p))<0) livres.push(p); }
+    return [{ json:{ ok:true, id_caixa_ftth:idCaixa, capacidade:cap, ocupadas:ocup, livres } }];
+  }
   // ONU: "Gravar na ONU" (Integração ONU) = manda o SCRIPT de config (PPPoE etc.) pro dispositivo. body: { id_fibra } ou { id_login }
   if (acao === 'onu_gravar'){
     let idFibra = String(body.id_fibra||'').trim(); const idLogin = String(body.id_login||'').trim();

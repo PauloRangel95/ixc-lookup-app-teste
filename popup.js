@@ -1482,7 +1482,13 @@ async function _encOnuCaixas(ov, idOlt){
   if(busca) busca.oninput=function(){ pinta(this.value); };
   lista.onclick=(e)=>{ const row=e.target.closest('[data-caixa]'); if(!row) return; _onuCaixaSel={id:row.getAttribute('data-caixa'),proj:row.getAttribute('data-proj'),nome:row.getAttribute('data-nome')};
     [...lista.querySelectorAll('[data-caixa]')].forEach(x=>x.style.borderColor='var(--b)'); row.style.borderColor='var(--acc)';
-    if(selDiv){ selDiv.style.color='var(--g)'; selDiv.innerHTML='✓ '+_onuCaixaSel.nome; } };
+    if(selDiv){ selDiv.style.color='var(--tx2)'; selDiv.innerHTML='✓ '+_onuCaixaSel.nome+' — carregando portas...'; }
+    const pSel=ov.querySelector('#onu-porta'); if(pSel) pSel.innerHTML='<option value="">...</option>';
+    fetch(WEBHOOK_OS_ACAO,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({acao:'caixa_portas',id_caixa_ftth:_onuCaixaSel.id})}).then(x=>x.json()).then(r=>{
+      const lv=(r&&r.livres)||[];
+      if(pSel) pSel.innerHTML='<option value="">porta</option>'+lv.map(p=>'<option value="'+p+'">porta '+p+'</option>').join('');
+      if(selDiv){ selDiv.style.color=lv.length?'var(--g)':'var(--r)'; selDiv.innerHTML='✓ '+_onuCaixaSel.nome+' · '+(lv.length?(lv.length+' porta(s) livre(s)'):'SEM porta livre'); }
+    }).catch(()=>{ if(pSel) pSel.innerHTML='<option value="">porta</option>'; if(selDiv) selDiv.innerHTML='✓ '+_onuCaixaSel.nome+' (erro ao ler portas)'; }); };
   pinta('');
 }
 function _encOnuWire(ov){
@@ -1853,7 +1859,7 @@ function _osAtendimento(idChamado){
           +'<select id="onu-perfil" style="width:100%;margin:2px 0;padding:6px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx)"></select>'
           +'<label style="font-size:12px;color:var(--tx);display:flex;align-items:center;gap:6px;margin-top:4px"><input type="checkbox" id="onu-bridge"> Bridge <span style="color:var(--tx2)">(padrão: router)</span></label>'
           +'<div style="margin-top:8px;border-top:1px solid var(--b);padding-top:6px"><label style="font-size:11px;color:var(--tx)">📍 Caixa (CTO) — próximas do cliente</label>'
-          +'<div style="display:flex;gap:6px;margin-top:2px"><input id="onu-caixa-busca" placeholder="🔎 buscar caixa..." style="flex:1;min-width:0;padding:6px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx)"><input id="onu-porta" inputmode="numeric" placeholder="porta" style="width:64px;padding:6px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx)"></div>'
+          +'<div style="display:flex;gap:6px;margin-top:2px"><input id="onu-caixa-busca" placeholder="🔎 buscar caixa..." style="flex:1;min-width:0;padding:6px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx)"><select id="onu-porta" style="width:100px;padding:6px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx)"><option value="">porta</option></select></div>'
           +'<div id="onu-caixa-lista" style="max-height:150px;overflow-y:auto;margin-top:4px"></div>'
           +'<div id="onu-caixa-sel" style="font-size:11px;color:var(--tx2);margin-top:2px">Nenhuma caixa selecionada</div></div>'
           +'<button class="btn-sm btn-green" data-onu="autorizar" style="margin-top:8px;width:100%">📡 Autorizar ONU na OLT</button>'
