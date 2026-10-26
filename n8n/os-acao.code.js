@@ -71,6 +71,15 @@ try {
     return [{ json:{ ok:true, id_almox:idAlmox, almox:almoxDesc, total:produtos.length, produtos } }];
   }
 
+  // CAIXAS (CTO) de uma OLT com coordenadas (READ). body: { id_transmissor }
+  if (acao === 'caixas_olt'){
+    const idTx = String(body.id_transmissor||'').trim();
+    if(!idTx) return [{ json:{ ok:false, erro:'id_transmissor é obrigatório' } }];
+    const r = await ixcList.call(this,'rad_caixa_ftth',{ qtype:'rad_caixa_ftth.id_transmissor', query:idTx, oper:'=', rp:'3000', page:'1', sortname:'rad_caixa_ftth.id', sortorder:'desc' });
+    let regs=(r&&r.registros); regs=Array.isArray(regs)?regs:[];
+    const caixas=regs.map(x=>({ id:String(x.id), nome:x.descricao, lat:parseFloat(x.latitude)||null, lng:parseFloat(x.longitude)||null, cap:x.capacidade, id_projeto:String(x.id_projeto||'') }));
+    return [{ json:{ ok:true, id_transmissor:idTx, total:caixas.length, caixas } }];
+  }
   // ACS: achar o aparelho (CPE/TR-069) do cliente pelo login + WiFi do cadastro do login (READ). body: { id_login }
   if (acao === 'acs_dispositivo'){
     const idLogin = String(body.id_login||'').trim();

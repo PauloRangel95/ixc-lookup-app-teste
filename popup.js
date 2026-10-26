@@ -1450,8 +1450,44 @@ function _onuMatchPerfil(modelo, bridge){
   if(key){ const p=ps.find(x=>new RegExp(key).test((x.nome||'').toUpperCase())); if(p) return p.id; }
   return '';
 }
+// Coords do cliente p/ caixas próximas: GPS primeiro, senão as coords do OZmap (coords_cliente [lng,lat]).
+let _onuCli=null, _onuCaixasCache=null, _onuCaixaSel=null;
+async function _encOnuClienteCoord(){
+  if(_onuCli) return _onuCli;
+  try{ const pos=await new Promise((res,rej)=>navigator.geolocation.getCurrentPosition(res,rej,{timeout:6000,maximumAge:60000,enableHighAccuracy:true})); _onuCli={lat:pos.coords.latitude,lng:pos.coords.longitude,src:'GPS'}; return _onuCli; }catch(e){}
+  try{ const oz=((dadosAtual&&dadosAtual._ozmap)||{})[_encDados.id_login]; const cc=oz&&oz.coords_cliente; if(Array.isArray(cc)&&cc.length===2&&cc[1]){ _onuCli={lat:+cc[1],lng:+cc[0],src:'cadastro'}; return _onuCli; } }catch(e){}
+  _onuCli={lat:null,lng:null,src:null}; return _onuCli;
+}
+async function _encOnuCaixas(ov, idOlt){
+  const lista=ov.querySelector('#onu-caixa-lista'), busca=ov.querySelector('#onu-caixa-busca'), selDiv=ov.querySelector('#onu-caixa-sel');
+  if(!lista) return;
+  lista.innerHTML='<div style="font-size:11px;color:var(--tx2)">Carregando caixas da OLT...</div>';
+  if(!_onuCaixasCache || _onuCaixasCache._olt!==String(idOlt)){
+    try{ const r=await fetch(WEBHOOK_OS_ACAO,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({acao:'caixas_olt',id_transmissor:String(idOlt)})}).then(x=>x.json()); _onuCaixasCache=(r&&r.caixas)||[]; }catch(e){ _onuCaixasCache=[]; }
+    _onuCaixasCache._olt=String(idOlt);
+  }
+  const cli=await _encOnuClienteCoord();
+  const withDist=(arr)=>arr.map(c=>Object.assign({},c,{dist:(cli.lat!=null&&c.lat!=null)?_ozDist(cli.lat,cli.lng,c.lat,c.lng):null}));
+  const pinta=(term)=>{
+    term=(term||'').trim().toUpperCase();
+    let arr;
+    if(term) arr=withDist(_onuCaixasCache).filter(c=>String(c.nome||'').toUpperCase().indexOf(term)>=0).sort((a,b)=>(a.dist==null?9e9:a.dist)-(b.dist==null?9e9:b.dist));
+    else if(cli.lat!=null) arr=withDist(_onuCaixasCache).filter(c=>c.dist!=null&&c.dist<=500).sort((a,b)=>a.dist-b.dist);
+    else arr=withDist(_onuCaixasCache);
+    const hdr=cli.lat!=null?'<div style="font-size:10px;color:var(--g);margin-bottom:2px">📍 ≤500m ('+cli.src+')'+(term?' + busca':'')+'</div>':'<div style="font-size:10px;color:var(--y);margin-bottom:2px">Sem localização — busque a caixa pelo nome</div>';
+    arr=arr.slice(0,40);
+    if(!arr.length){ lista.innerHTML=hdr+'<div class="empty" style="font-size:11px">Nenhuma caixa'+(cli.lat!=null&&!term?' ≤500m. Busque pelo nome.':'.')+'</div>'; return; }
+    lista.innerHTML=hdr+arr.map(c=>{ const s=_onuCaixaSel&&String(_onuCaixaSel.id)===String(c.id); return '<div data-caixa="'+c.id+'" data-proj="'+(c.id_projeto||'')+'" data-nome="'+String(c.nome||'').replace(/"/g,'&quot;')+'" style="padding:5px 8px;border:1px solid '+(s?'var(--acc)':'var(--b)')+';border-radius:6px;margin-bottom:3px;cursor:pointer;font-size:12px;color:var(--tx)">'+(c.dist!=null?('<b>'+Math.round(c.dist)+'m</b> · '):'')+String(c.nome||'').replace(/</g,'')+'</div>'; }).join('');
+  };
+  if(busca) busca.oninput=function(){ pinta(this.value); };
+  lista.onclick=(e)=>{ const row=e.target.closest('[data-caixa]'); if(!row) return; _onuCaixaSel={id:row.getAttribute('data-caixa'),proj:row.getAttribute('data-proj'),nome:row.getAttribute('data-nome')};
+    [...lista.querySelectorAll('[data-caixa]')].forEach(x=>x.style.borderColor='var(--b)'); row.style.borderColor='var(--acc)';
+    if(selDiv){ selDiv.style.color='var(--g)'; selDiv.innerHTML='✓ '+_onuCaixaSel.nome; } };
+  pinta('');
+}
 function _encOnuWire(ov){
   if(_encDados._onu_ok) return;
+  _onuCaixaSel=null; _onuCli=null;
   const q=id=>ov.querySelector('#'+id);
   const selOlt=q('onu-olt'), lista=q('onu-lista'), pbox=q('onu-perfil-box'), selPer=q('onu-perfil'), chkBr=q('onu-bridge');
   let sel=null;
@@ -1482,17 +1518,21 @@ function _encOnuWire(ov){
   };
   if(lista) lista.onclick=(e)=>{ const row=e.target.closest('[data-onusel]'); if(!row||!lista._items) return; sel=lista._items[+row.getAttribute('data-onusel')]; _encDados._onu_sel=sel;
     [...lista.querySelectorAll('[data-onusel]')].forEach(x=>x.style.borderColor='var(--b)'); row.style.borderColor='var(--acc)';
-    if(pbox) pbox.style.display='block'; setPerfilAuto();
+    if(pbox) pbox.style.display='block'; setPerfilAuto(); _encOnuCaixas(ov, selOlt&&selOlt.value);
   };
   const btnAut=ov.querySelector('[data-onu="autorizar"]');
   if(btnAut) btnAut.onclick=async function(){
     if(!sel){ toast('Selecione a ONU','err'); return; }
-    if(!confirm('AUTORIZAR a ONU '+sel.mac+' ('+sel.modelo+', slot/pon '+sel.slot+'/'+sel.pon+')?\n\n⚠ Isto GRAVA na OLT REAL.')) return;
+    const porta=((ov.querySelector('#onu-porta')||{}).value||'').trim();
+    if(!_onuCaixaSel){ toast('Selecione a caixa (CTO)','err'); return; }
+    if(!porta){ toast('Informe a porta da caixa','err'); return; }
+    if(!confirm('AUTORIZAR a ONU '+sel.mac+' ('+sel.modelo+', slot/pon '+sel.slot+'/'+sel.pon+')\nCaixa: '+_onuCaixaSel.nome+' porta '+porta+'?\n\n⚠ Isto GRAVA na OLT REAL.')) return;
     this.disabled=true; this.textContent='⏳ Autorizando...';
     try{
       const r=await fetch(WEBHOOK_OS_ACAO,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ acao:'onu_autorizar',
         id_chamado:_encDados.id_chamado, get_id:sel.getId, id_transmissor:(selOlt&&selOlt.value)||'', id_perfil:(selPer&&selPer.value)||'',
         id_login:_encDados.id_login, id_contrato:(dadosAtual&&dadosAtual.contrato&&(dadosAtual.contrato.id||dadosAtual.contrato.numero))||'',
+        id_caixa_ftth:_onuCaixaSel.id, porta_ftth:porta, id_projeto:_onuCaixaSel.proj||'',
         onu_tipo:sel.modelo, mac:sel.mac, slotno:sel.slot, ponno:sel.pon, nome:_encDados.login_pppoe, bridge:(chkBr&&chkBr.checked)?'1':'0' })}).then(x=>x.json());
       if(r&&r.ok){ _encDados._onu_ok=true; _encDados._onu_mac=sel.mac; toast('ONU autorizada ✓','ok'); this.textContent='✓ Autorizada'; if(pbox) pbox.innerHTML='<div style="color:var(--g);font-size:12px">✓ ONU '+sel.mac+' autorizada (fibra #'+(r.id_cliente_fibra||'?')+').</div>'; }
       else { this.disabled=false; this.textContent='📡 Autorizar ONU na OLT'; toast('Falha: '+((r&&(r.erro||(r.gravar&&r.gravar.message)))||'erro'),'err'); }
@@ -1803,8 +1843,12 @@ function _osAtendimento(idChamado){
           +'<label style="font-size:11px;color:var(--tx)">Perfil (automático pelo modelo)</label>'
           +'<select id="onu-perfil" style="width:100%;margin:2px 0;padding:6px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx)"></select>'
           +'<label style="font-size:12px;color:var(--tx);display:flex;align-items:center;gap:6px;margin-top:4px"><input type="checkbox" id="onu-bridge"> Bridge <span style="color:var(--tx2)">(padrão: router)</span></label>'
+          +'<div style="margin-top:8px;border-top:1px solid var(--b);padding-top:6px"><label style="font-size:11px;color:var(--tx)">📍 Caixa (CTO) — próximas do cliente</label>'
+          +'<div style="display:flex;gap:6px;margin-top:2px"><input id="onu-caixa-busca" placeholder="🔎 buscar caixa..." style="flex:1;min-width:0;padding:6px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx)"><input id="onu-porta" inputmode="numeric" placeholder="porta" style="width:64px;padding:6px;border:1px solid var(--b2);border-radius:6px;background:var(--bg);color:var(--tx)"></div>'
+          +'<div id="onu-caixa-lista" style="max-height:150px;overflow-y:auto;margin-top:4px"></div>'
+          +'<div id="onu-caixa-sel" style="font-size:11px;color:var(--tx2);margin-top:2px">Nenhuma caixa selecionada</div></div>'
           +'<button class="btn-sm btn-green" data-onu="autorizar" style="margin-top:8px;width:100%">📡 Autorizar ONU na OLT</button>'
-          +'<div style="font-size:10px;color:var(--y);margin-top:4px">⚠ Grava na OLT real. VLAN herda da OLT. Confira MAC/slot/pon.</div>'
+          +'<div style="font-size:10px;color:var(--y);margin-top:4px">⚠ Grava na OLT real. VLAN herda da OLT. Confira MAC/slot/pon e a caixa.</div>'
         +'</div>'; },
       after:(ov)=>_encOnuWire(ov) },
     { ic:'⚙️', titulo:'Configurar Dispositivo', render:()=>'<div style="font-size:11px;color:var(--tx2);margin-bottom:6px">Aparelho do cliente (TR-069/ACS) — status e envio de WiFi.</div><div id="cfg-dev"></div>',
