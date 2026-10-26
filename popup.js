@@ -1557,6 +1557,8 @@ function _encCfgWire(ov){
       +'<div style="display:flex;justify-content:space-between;gap:8px;margin-bottom:4px"><strong>'+String((d.manufacturer||'')+' '+(d.model||'')).replace(/</g,'')+'</strong>'+(on?'<span style="color:var(--g)">● online</span>':'<span style="color:var(--r)">● '+String(d.status||'offline').replace(/</g,'')+'</span>')+'</div>'
       +'<div style="color:var(--tx2)">Serial '+(d.serial||'-')+' · IP '+(d.ipv4||'-')+' · internet '+(d.internet==='A'?'OK':(d.internet||'-'))+'</div>'
       +'<div style="color:var(--tx2);font-size:10px">último inform: '+(d.last_inform||'-')+'</div></div>'
+      +'<button class="btn-sm btn-blue" id="cfg-gravaronu" style="margin-top:8px;width:100%">📡 Gravar na ONU (enviar PPPoE/config)</button>'
+      +'<div id="cfg-onu-msg" style="font-size:11px;margin-top:3px;color:var(--tx2);word-break:break-word"></div>'
       +(on
         ? '<div style="margin-top:8px;font-size:11px;color:var(--tx)">WiFi do cadastro do login — confira e envie ao aparelho:</div>'
           +'<div style="display:flex;gap:6px;margin-top:4px">'+inp('cfg-ssid','SSID 2.4G',wf.ssid)+inp('cfg-senha','Senha 2.4G',wf.senha)+'</div>'
@@ -1565,6 +1567,13 @@ function _encCfgWire(ov){
           +'<div id="cfg-msg" style="font-size:11px;margin-top:4px;color:var(--tx2);word-break:break-word"></div>'
         : '<div style="margin-top:8px;font-size:12px;color:var(--y);line-height:1.4">⚠ Aparelho <b>offline</b> no ACS. Autorize a ONU (passo 📡) e aguarde o roteador conectar (1–2 min). O WiFi só sobe com o aparelho online.</div>'
           +'<button class="btn-sm btn-gray" id="cfg-refresh" style="margin-top:6px;width:100%">🔄 Atualizar status</button>');
+    const bgrav=ov.querySelector('#cfg-gravaronu');
+    if(bgrav) bgrav.onclick=async function(){ this.disabled=true; this.textContent='⏳ Gravando na ONU...'; const m=ov.querySelector('#cfg-onu-msg');
+      try{ const rr=await fetch(WEBHOOK_OS_ACAO,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({acao:'onu_gravar',id_login:_encDados.id_login})}).then(x=>x.json());
+        if(rr&&rr.ok){ toast('Config enviada à ONU ✓','ok'); this.textContent='✓ Gravado na ONU'; if(m){m.style.color='var(--g)';m.textContent='✓ '+(typeof rr.resumo==='string'?rr.resumo.slice(0,180):'ok');} }
+        else { this.disabled=false; this.textContent='📡 Gravar na ONU (enviar PPPoE/config)'; if(m){m.style.color='var(--r)';m.textContent='Falha: '+((rr&&(rr.erro||(typeof rr.resumo==='string'?rr.resumo:'')))||'erro');} }
+      }catch(e){ this.disabled=false; this.textContent='📡 Gravar na ONU (enviar PPPoE/config)'; toast('Erro ao gravar na ONU','err'); }
+    };
     if(on){
       const btn=ov.querySelector('#cfg-enviar');
       if(btn) btn.onclick=async function(){

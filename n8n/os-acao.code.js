@@ -80,6 +80,16 @@ try {
     const caixas=regs.map(x=>({ id:String(x.id), nome:x.descricao, lat:parseFloat(x.latitude)||null, lng:parseFloat(x.longitude)||null, cap:x.capacidade, id_projeto:String(x.id_projeto||'') }));
     return [{ json:{ ok:true, id_transmissor:idTx, total:caixas.length, caixas } }];
   }
+  // ONU: "Gravar na ONU" (Integração ONU) = manda o SCRIPT de config (PPPoE etc.) pro dispositivo. body: { id_fibra } ou { id_login }
+  if (acao === 'onu_gravar'){
+    let idFibra = String(body.id_fibra||'').trim(); const idLogin = String(body.id_login||'').trim();
+    if(!idFibra && idLogin){ try{ const g=await ixcList.call(this,'radpop_radio_cliente_fibra',{ qtype:'radpop_radio_cliente_fibra.id_login', query:idLogin, oper:'=', rp:'1', page:'1', sortname:'radpop_radio_cliente_fibra.id', sortorder:'desc' }); const ex=(g&&g.registros&&g.registros[0]); if(ex&&ex.id) idFibra=String(ex.id); }catch(_){} }
+    if(!idFibra) return [{ json:{ ok:false, erro:'id_fibra (ou id_login com registro de fibra) é obrigatório' } }];
+    let r; try{ r = await ixcWrite.call(this,'radpop_radio_cliente_fibra_24700',{ id:idFibra }); }catch(e){ return [{ json:{ ok:false, erro:errInfo(e) } }]; }
+    const resumo = (typeof r==='string') ? r.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim().slice(0,400) : r;
+    const ok = (typeof r==='string') ? (r.toLowerCase().includes('sucesso') && !r.toLowerCase().includes('falha') && !r.toLowerCase().includes('fail')) : !(r&&r.type==='error');
+    return [{ json:{ ok, acao, id_fibra:idFibra, resumo } }];
+  }
   // ACS: achar o aparelho (CPE/TR-069) do cliente pelo login + WiFi do cadastro do login (READ). body: { id_login }
   if (acao === 'acs_dispositivo'){
     const idLogin = String(body.id_login||'').trim();
