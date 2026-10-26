@@ -1508,7 +1508,7 @@ function _encOnuWire(ov){
     try{
       const r=await fetch(WEBHOOK_OS_ACAO,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({acao:'listar',endpoint:'fh_onu_nao_autorizadas',params:{grid_param:'[{"TB":"id_olt","P":"'+idOlt+'"}]'}})}).then(x=>x.json());
       const reg=r&&r.registros; const rows=(reg&&reg.rows)?reg.rows:[];
-      let items=rows.map(row=>{ const kv=_onuDecodeBlob(row.id); return {getId:kv.ID||'', mac:kv.MAC||'', slot:kv.SLOT||'', pon:kv.PON||'', ponid:kv.PONID||'', modelo:kv.MODELO||kv.EQID||''}; });
+      let items=rows.map(row=>{ const kv=_onuDecodeBlob(row.id); return {getId:row.id, mac:kv.MAC||'', slot:kv.SLOT||'', pon:kv.PON||'', ponid:kv.PONID||'', modelo:kv.MODELO||kv.EQID||''}; });
       if(slot) items=items.filter(it=>String(it.slot)===slot);
       if(pon) items=items.filter(it=>String(it.pon)===pon);
       if(!items.length){ lista.innerHTML='<div style="font-size:11px;color:var(--y)">Nenhuma ONU não autorizada'+((slot||pon)?(' em '+slot+'/'+pon):'')+' nessa OLT.</div>'; pbox.style.display='none'; }

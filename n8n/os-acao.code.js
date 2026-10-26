@@ -189,8 +189,11 @@ try {
       if(!getId) return [{ json:{ ok:false, erro:'get_id (ou id_fibra) é obrigatório' } }];
       try{ r1 = await ixcWrite.call(this,'fh_onu_nao_autorizadas_22396',{ get_id:getId }); }
       catch(e){ return [{ json:{ ok:false, etapa:'autorizar', erro:errInfo(e) } }]; }
-      idFibra = String((r1&&(r1.id||r1.id_cliente_fibra||r1.id_registro))||'').trim();
-      if(!idFibra || (r1&&r1.type==='error')) return [{ json:{ ok:false, etapa:'autorizar', erro:'não retornou id do cliente fibra', resposta:r1 } }];
+      if(r1&&r1.type==='error') return [{ json:{ ok:false, etapa:'autorizar', erro:(r1.message||'erro ao autorizar'), resposta:r1 } }];
+      // O id retornado por _22396 NÃO é o id do registro de fibra — acha pelo MAC recém-autorizado.
+      if(macReq){ try{ const gm2=await ixcList.call(this,'radpop_radio_cliente_fibra',{ qtype:'radpop_radio_cliente_fibra.mac', query:macReq, oper:'=', rp:'1', page:'1', sortname:'radpop_radio_cliente_fibra.id', sortorder:'desc' }); const ex=(gm2&&gm2.registros&&gm2.registros[0]); if(ex&&ex.id) idFibra=String(ex.id); }catch(_){} }
+      if(!idFibra) idFibra = String((r1&&(r1.id_cliente_fibra||r1.id_registro))||'').trim();
+      if(!idFibra) return [{ json:{ ok:false, etapa:'autorizar', erro:'autorizou mas não localizei o registro de fibra pelo MAC', resposta:r1 } }];
     }
     // 2) completa o registro: busca o atual e mescla os vínculos
     let cur={}; try{ const g=await ixcList.call(this,'radpop_radio_cliente_fibra',{ qtype:'radpop_radio_cliente_fibra.id', query:idFibra, oper:'=', rp:'1', page:'1' }); cur=(g&&g.registros&&g.registros[0])||{}; }catch(_){}
